@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+
+# Calibration and sample frames from the bench camera. They stay on the bench.
+refs/
+samples/
+*.png
+*.jpg
