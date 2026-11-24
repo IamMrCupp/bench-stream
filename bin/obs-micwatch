@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""obs-micwatch: reconnect an OBS audio input after its USB device comes back.
+
+When the DJI Mic receiver drops off USB and re-appears, PipeWire gives it a new
+source, and OBS's pulse capture stream stays attached to nothing (pactl shows
+`Source: 4294967295`) until the input's device is set again. This watches for
+that and re-applies the input's device through obs-websocket: first a
+placeholder device that doesn't exist (so nothing else is captured in between),
+then the real one.
+
+Checks every OBS_MICWATCH_INTERVAL seconds (default 2). Input name from
+OBS_MICWATCH_INPUT (default "DJI Mic"). The device is read from OBS, not set here.
+"""
+import asyncio, base64, hashlib, json, os, subprocess, sys, time
+
+CONF = os.path.expanduser("~/.config/obs-studio/plugin_config/obs-websocket/config.json")
+INPUT = os.environ.get("OBS_MICWATCH_INPUT", "DJI Mic")
+INTERVAL = float(os.environ.get("OBS_MICWATCH_INTERVAL", "2"))
+COOLDOWN = float(os.environ.get("OBS_MICWATCH_COOLDOWN", "10"))
+PLACEHOLDER = "obs-micwatch-reconnecting"
+
+
+class RequestFailed(RuntimeError):
+    """OBS answered but refused the request; the connection is still good."""
+
+
+def log(msg):
+    print(time.strftime("%H:%M:%S"), msg, flush=True)
+
+
+def decide(device_id, sources, outputs, input_name):
+    """Return (action, reason). action is "reconnect" or "ok".
+
+    device_id: the OBS input's device_id setting.
+    sources: {source name: index} from PipeWire.
+    outputs: [(source index, media.name)] for OBS's capture streams.
+    """
+    if not device_id or device_id in ("default", PLACEHOLDER):
+        return "ok", "input not pinned to a device"
+    if device_id not in sources:
+        return "ok", "device absent (receiver has no audio, transmitters off?)"
+    want = sources[device_id]
+    mine = [src for src, name in outputs if name == input_name]
+    if not mine:
+        return "reconnect", "OBS has no capture stream for the input"
+    if want in mine:
+        return "ok", "linked"
+    return "reconnect", f"stream on source {mine[0]}, device is source {want}"
+
+
+def pipewire_state():
+    def pj(*args):
+        return json.loads(subprocess.run(["pactl", "-f", "json", *args], capture_output=True,
+                                         text=True, check=True, timeout=10).stdout)
+    sources = {s["name"]: s["index"] for s in pj("list", "short", "sources")}
+    outputs = [(o["source"], o["properties"].get("media.name"))
+               for o in pj("list", "source-outputs")
+               if o["properties"].get("application.name") == "OBS"]
+    return sources, outputs
+
+
+class Obs:
+    def __init__(self):
+        self.ws = None
+        self.n = 0
+
+    async def connect(self):
+        import websockets
+        conf = json.load(open(CONF))
+        self.ws = await websockets.connect(f"ws://127.0.0.1:{conf['server_port']}")
+        hello = json.loads(await self.ws.recv())["d"]
+        ident = {"rpcVersion": 1, "eventSubscriptions": 0}
+        auth = hello.get("authentication")
+        if auth:
+            s = base64.b64encode(hashlib.sha256((conf["server_password"] + auth["salt"]).encode()).digest())
+            ident["authentication"] = base64.b64encode(
+                hashlib.sha256(s + auth["challenge"].encode()).digest()).decode()
+        await self.ws.send(json.dumps({"op": 1, "d": ident}))
+        if json.loads(await self.ws.recv())["op"] != 2:
+            raise RuntimeError("OBS refused the connection")
+
+    async def request(self, kind, data):
+        self.n += 1
+        rid = str(self.n)
+        await self.ws.send(json.dumps({"op": 6, "d": {"requestType": kind, "requestId": rid, "requestData": data}}))
+        while True:
+            msg = json.loads(await self.ws.recv())
+            if msg["op"] == 7 and msg["d"]["requestId"] == rid:
+                st = msg["d"]["requestStatus"]
+                if not st["result"]:
+                    raise RequestFailed(f"{kind}: {st.get('comment', st['code'])}")
+                return msg["d"].get("responseData", {})
+
+    async def device_id(self):
+        r = await self.request("GetInputSettings", {"inputName": INPUT})
+        return r["inputSettings"].get("device_id")
+
+    async def set_device(self, dev):
+        await self.request("SetInputSettings", {"inputName": INPUT, "inputSettings": {"device_id": dev}})
+
+
+async def run():
+    obs, last_fix, last_reason = Obs(), 0.0, None
+    while True:
+        try:
+            if obs.ws is None:
+                await obs.connect()
+                log(f"connected to OBS, watching input {INPUT!r}")
+            dev = await obs.device_id()
+            sources, outputs = pipewire_state()
+            action, reason = decide(dev, sources, outputs, INPUT)
+            if reason != last_reason:
+                log(reason)
+                last_reason = reason
+            if action == "reconnect" and time.monotonic() - last_fix >= COOLDOWN:
+                log(f"reconnecting {INPUT!r} to {dev}")
+                await obs.set_device(PLACEHOLDER)
+                await asyncio.sleep(0.5)
+                await obs.set_device(dev)
+                last_fix = time.monotonic()
+                last_reason = None
+        except RequestFailed as e:  # e.g. the input was renamed or deleted
+            if str(e) != last_reason:
+                log(str(e))
+                last_reason = str(e)
+        except Exception as e:  # OBS closed, PipeWire restarting, ...
+            if obs.ws is not None:
+                log(f"lost OBS or PipeWire: {e!r}")
+                try:
+                    await obs.ws.close()
+                except Exception:
+                    pass
+            obs.ws, last_reason = None, None
+        await asyncio.sleep(INTERVAL)
+
+
+if __name__ == "__main__":
+    asyncio.run(run())

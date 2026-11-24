@@ -1,0 +1,20 @@
+#!/bin/sh
+# Manual exposure and white balance for the EMEET PIXY (tuned 2026-11-16 for the
+# bench's overhead + bench lights). The camera forgets these on replug or reboot;
+# /etc/udev/rules.d/62-bench-pixy-tune.rules runs this when it appears.
+# Usage: pixy-tune [-d DEVICE] [exposure] [kelvin]   |   pixy-tune auto
+# Change the defaults below to change what a replug applies.
+EXPOSURE=550
+KELVIN=4800
+if [ "$1" = -d ]; then D=$2; shift 2; fi
+[ -n "$D" ] || D=$(ls /dev/v4l/by-id/*EMEET*PIXY*index0 2>/dev/null | head -1)
+D=${D:-/dev/video0}
+if [ "$1" = auto ]; then exec v4l2-ctl -d "$D" -c auto_exposure=3 -c white_balance_automatic=1; fi
+# A camera that has only just appeared can refuse the first try.
+for _ in 1 2 3; do
+    v4l2-ctl -d "$D" -c auto_exposure=1 -c white_balance_automatic=0 &&
+        v4l2-ctl -d "$D" -c exposure_time_absolute="${1:-$EXPOSURE}" -c white_balance_temperature="${2:-$KELVIN}" &&
+        exit 0
+    sleep 1
+done
+exit 1

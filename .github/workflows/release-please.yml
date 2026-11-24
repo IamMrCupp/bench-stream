@@ -1,0 +1,22 @@
+name: release-please
+
+# On every push to main, open or update a release PR with the next version and
+# CHANGELOG.md from the conventional commits since the last release. Merging
+# that PR tags the release; nothing is released until then.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v5
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

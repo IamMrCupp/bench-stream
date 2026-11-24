@@ -1,0 +1,5 @@
+# Experiment, 2026-11-23: keep the host off the Sipeed thermal camera's built-in 36 MB
+# storage gadget. The kernel polled it for media changes every 2 s while the camera
+# streamed; testing whether that is a trigger for the camera's mid-stream hangs
+# (2-13 a day since 2026-10-15). Video is untouched. Delete this file to undo.
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_interface", ATTRS{idVendor}=="359f", ATTRS{idProduct}=="4201", ATTR{bInterfaceClass}=="08", ATTR{authorized}="0"

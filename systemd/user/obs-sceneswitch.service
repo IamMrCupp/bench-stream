@@ -1,0 +1,12 @@
+[Unit]
+Description=Switch OBS to the scope scene when the scope arm is over the work
+Documentation=file:%h/.local/bin/obs-sceneswitch
+
+[Service]
+ExecStart=%h/.local/bin/obs-sceneswitch run
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
