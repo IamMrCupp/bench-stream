@@ -32,12 +32,16 @@ pairs() {  # "source target" per line, for the part asked for
 
 case "${1:-}" in
 --diff)
+    # As yourself: under sudo, $HOME is root's and every user file looks missing.
+    [ "$(id -u)" -ne 0 ] || { echo "run --diff as yourself, not root" >&2; exit 1; }
     { pairs user; pairs system; } | while read -r src dst; do
         if [ ! -e "$dst" ]; then
             echo "not installed: $dst"
         elif ! cmp -s "$src" "$dst"; then
             echo "differs:       $dst"
             diff -u "$dst" "$src" || true
+        elif [ -x "$src" ] && [ ! -x "$dst" ]; then
+            echo "not executable: $dst"
         fi
     done
     ;;
@@ -45,7 +49,8 @@ case "${1:-}" in
     [ "$(id -u)" -eq 0 ] || { echo "install.sh --system needs root (sudo)" >&2; exit 1; }
     pairs system | while read -r src dst; do
         case "$dst" in *.rules) mode=0644 ;; *) mode=0755 ;; esac
-        install -D -m "$mode" "$src" "$dst" && echo "installed $dst"
+        install -D -T -m "$mode" "$src" "$dst" || exit 1
+        echo "installed $dst"
     done
     udevadm control --reload
     echo "udev rules reloaded. They apply the next time each device appears (replug or reboot)."
@@ -54,7 +59,8 @@ case "${1:-}" in
     [ "$(id -u)" -ne 0 ] || { echo "run the user part as yourself, not root" >&2; exit 1; }
     pairs user | while read -r src dst; do
         case "$dst" in *.service) mode=0644 ;; *) mode=0755 ;; esac
-        install -D -m "$mode" "$src" "$dst" && echo "installed $dst"
+        install -D -T -m "$mode" "$src" "$dst" || exit 1
+        echo "installed $dst"
     done
     systemctl --user daemon-reload
     echo "systemd reloaded. Restart a changed service with: systemctl --user restart <name>"
