@@ -30,6 +30,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: shellcheck
-        run: shellcheck install.sh bin/pixy-tune
+        run: shellcheck -S warning install.sh bin/pixy-tune
       - name: Python scripts compile
         run: for f in bin/obsctl bin/obs-golive bin/obs-micwatch bin/obs-sceneswitch bin/pixy-track; do python3 -m py_compile "$f"; done

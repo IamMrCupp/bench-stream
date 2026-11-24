@@ -20,3 +20,7 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          # A release PR opened with the built-in token never triggers CI. The
+          # PAT is the bench repos' shared fix; until it's set here, the
+          # fallback still opens release PRs, just without checks.
+          token: ${{ secrets.RELEASE_PLEASE_PAT || github.token }}
