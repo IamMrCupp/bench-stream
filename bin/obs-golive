@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""obs-golive: start every Aitum Multistream output when OBS's main stream starts.
+
+Runs as a user service. It listens to the OBS on this machine over obs-websocket
+and does two things:
+
+  main stream started  -> wait a few seconds, then start each Aitum output
+  main stream stopped  -> stop each Aitum output that is still running
+
+It never starts the main stream, and it does nothing when it attaches to an OBS
+that is already live: it only reacts to you pressing Start or Stop Streaming.
+
+Settings (environment):
+  OBS_GOLIVE_DELAY   seconds to wait after the main stream starts (default 5)
+  OBS_GOLIVE_CONF    obs-websocket config file (default: OBS's own)
+
+Reads the port and password from OBS's own config; never prints the password.
+"""
+import asyncio, base64, hashlib, json, os, sys
+
+import websockets
+
+CONF = os.environ.get(
+    "OBS_GOLIVE_CONF",
+    os.path.expanduser("~/.config/obs-studio/plugin_config/obs-websocket/config.json"),
+)
+DELAY = float(os.environ.get("OBS_GOLIVE_DELAY", "5"))
+RETRY = float(os.environ.get("OBS_GOLIVE_RETRY", "5"))
+VENDOR = "aitum-multistream"
+PREFIX = "aitum_multi_output_"  # how Aitum names its outputs inside OBS
+OUTPUTS_EVENTS = 1 << 6  # obs-websocket EventSubscription::Outputs
+STARTED = "OBS_WEBSOCKET_OUTPUT_STARTED"
+STOPPED = "OBS_WEBSOCKET_OUTPUT_STOPPED"
+STATE = {"connected": False}
+
+
+def log(*words):
+    print("obs-golive:", *words, flush=True)
+
+
+class Obs:
+    """One obs-websocket session: requests, plus the events seen while waiting."""
+
+    def __init__(self, ws):
+        self.ws = ws
+        self.events = []
+        self.n = 0
+
+    async def identify(self, password):
+        hello = json.loads(await self.ws.recv())["d"]
+        ident = {"rpcVersion": 1, "eventSubscriptions": OUTPUTS_EVENTS}
+        auth = hello.get("authentication")
+        if auth:
+            secret = base64.b64encode(hashlib.sha256((password + auth["salt"]).encode()).digest())
+            ident["authentication"] = base64.b64encode(
+                hashlib.sha256(secret + auth["challenge"].encode()).digest()
+            ).decode()
+        await self.ws.send(json.dumps({"op": 1, "d": ident}))
+        if json.loads(await self.ws.recv())["op"] != 2:
+            raise ConnectionError("OBS refused the connection")
+
+    async def request(self, kind, data=None):
+        self.n += 1
+        rid = str(self.n)
+        await self.ws.send(
+            json.dumps({"op": 6, "d": {"requestType": kind, "requestId": rid, "requestData": data or {}}})
+        )
+        while True:
+            msg = json.loads(await self.ws.recv())
+            if msg["op"] == 5:
+                self.events.append(msg["d"])
+            elif msg["op"] == 7 and msg["d"]["requestId"] == rid:
+                d = msg["d"]
+                return d["requestStatus"]["result"], d.get("responseData") or {}
+
+    async def next_event(self):
+        while not self.events:
+            msg = json.loads(await self.ws.recv())
+            if msg["op"] == 5:
+                self.events.append(msg["d"])
+        return self.events.pop(0)
+
+    async def vendor(self, kind, data=None):
+        ok, resp = await self.request(
+            "CallVendorRequest", {"vendorName": VENDOR, "requestType": kind, "requestData": data or {}}
+        )
+        return ok, (resp.get("responseData") or {})
+
+    async def aitum_outputs(self):
+        """Names of the outputs configured in Aitum Multistream."""
+        ok, resp = await self.vendor("get_outputs")
+        if not ok:
+            log("Aitum Multistream did not answer; is the plugin loaded?")
+            return []
+        return [o["name"] for o in resp.get("outputs", []) if o.get("name")]
+
+    async def active_outputs(self):
+        """OBS output names that are running right now."""
+        ok, resp = await self.request("GetOutputList")
+        return {o["outputName"] for o in resp.get("outputs", []) if o.get("outputActive")} if ok else set()
+
+    async def main_stream_active(self):
+        ok, resp = await self.request("GetStreamStatus")
+        return bool(ok and resp.get("outputActive"))
+
+
+async def start_all(obs):
+    if DELAY:
+        await asyncio.sleep(DELAY)
+    if not await obs.main_stream_active():
+        log("main stream stopped again before the delay ran out; starting nothing")
+        return
+    running = await obs.active_outputs()
+    for name in await obs.aitum_outputs():
+        if PREFIX + name in running:
+            log(f"'{name}' is already running")
+            continue
+        ok, resp = await obs.vendor("start_output", {"output": name, "name": name})
+        log(f"start '{name}':", "ok" if ok and resp.get("success", True) else f"FAILED {resp}")
+
+
+async def stop_all(obs):
+    running = await obs.active_outputs()
+    for name in await obs.aitum_outputs():
+        if PREFIX + name not in running:
+            continue
+        ok, resp = await obs.vendor("stop_output", {"output": name, "name": name})
+        log(f"stop '{name}':", "ok" if ok and resp.get("success", True) else f"FAILED {resp}")
+
+
+async def session(url, password):
+    async with websockets.connect(url, max_size=16 * 2**20) as ws:
+        obs = Obs(ws)
+        await obs.identify(password)
+        STATE["connected"] = True
+        live = await obs.main_stream_active()
+        log("connected to OBS;", "main stream is already live, leaving it alone" if live else "waiting for go-live")
+        while True:
+            ev = await obs.next_event()
+            if ev.get("eventType") != "StreamStateChanged":
+                continue
+            state = ev.get("eventData", {}).get("outputState")
+            if state == STARTED:
+                log("main stream started")
+                await start_all(obs)
+            elif state == STOPPED:
+                log("main stream stopped")
+                await stop_all(obs)
+
+
+async def main():
+    quiet = False  # say "not reachable" once, then stay quiet while OBS is closed
+    while True:
+        try:
+            conf = json.load(open(CONF))
+            await session(f"ws://127.0.0.1:{conf['server_port']}", conf.get("server_password", ""))
+        except (OSError, websockets.WebSocketException, ConnectionError, KeyError, ValueError) as e:
+            if STATE["connected"]:
+                log(f"lost OBS ({type(e).__name__}); retrying every {RETRY:g}s")
+            elif not quiet:
+                log(f"OBS is not reachable ({type(e).__name__}); retrying every {RETRY:g}s")
+            STATE["connected"] = False
+            quiet = True
+        await asyncio.sleep(RETRY)
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

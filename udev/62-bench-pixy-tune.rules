@@ -1,0 +1,8 @@
+# Re-apply the EMEET PIXY's manual exposure and white balance when it appears
+# (boot or replug). The camera comes up on auto and OBS does not restore them.
+# Values live in /usr/local/bin/pixy-tune.
+ACTION=="add", SUBSYSTEM=="video4linux", ENV{ID_VENDOR_ID}=="328f", ENV{ID_MODEL_ID}=="00c0", ATTR{index}=="0", RUN+="/usr/local/bin/pixy-tune -d $devnode"
+# The camera also comes up with AI tracking off (found 2026-11-19 after a reboot).
+# Switch it back on; detached because it can take several seconds. Remove this
+# line to leave tracking off after a replug. Manual: sudo pixy-track on|off|status
+ACTION=="add", SUBSYSTEM=="video4linux", ENV{ID_VENDOR_ID}=="328f", ENV{ID_MODEL_ID}=="00c0", ATTR{index}=="0", RUN+="/usr/bin/systemd-run --no-block --unit=pixy-track-on --collect /usr/local/bin/pixy-track on"

@@ -1,0 +1,13 @@
+[Unit]
+Description=Start Aitum Multistream outputs when the OBS main stream goes live
+Documentation=file:%h/.local/bin/obs-golive
+
+[Service]
+ExecStart=%h/.local/bin/obs-golive
+Environment=OBS_GOLIVE_DELAY=5
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

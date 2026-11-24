@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+"""obs-sceneswitch: switch OBS to the scope scene when the scope arm is over the work.
+
+It watches one OBS source (the overhead camera) through obs-websocket and
+measures how much of the blue work mat is covered by something white, which is
+what the scope head and boom are. Where on the mat the arm lands, and what is
+under it, do not matter. It switches scene when the arm has clearly moved:
+
+  arm swung in   and the overhead scene is live  -> scope scene
+  arm parked     and the scope scene is live     -> overhead scene
+
+It acts only on a change of arm position, so switching scenes by hand is never
+fought. It does nothing until both positions have been calibrated.
+
+  obs-sceneswitch calibrate in        # arm over the work: save a reference
+  obs-sceneswitch calibrate parked    # arm parked: save a reference
+  obs-sceneswitch status              # what it sees right now, no switching
+  obs-sceneswitch run                 # watch and switch (what the service runs)
+  obs-sceneswitch forget in|parked    # drop that position's references
+
+Settings (environment):
+  SCENESWITCH_SOURCE     OBS source to watch          (default "Mevo SRT")
+  SCENESWITCH_SCOPE      scene for arm-in             (default "Scope Camera")
+  SCENESWITCH_OVERHEAD   scene for arm-parked         (default "Overhead Camera")
+  SCENESWITCH_INTERVAL   seconds between looks        (default 1.0)
+  SCENESWITCH_HOLD       looks in a row that must agree before switching (default 3)
+  SCENESWITCH_MAT        where the mat is in the picture, as left,top,right,bottom
+                         fractions of the frame       (default 0.04,0.03,0.625,0.62)
+  SCENESWITCH_DIR        where references live        (default ~/.local/share/scene-switch)
+  SCENESWITCH_CONF       obs-websocket config file    (default: OBS's own)
+
+Reads the port and password from OBS's own config; never prints the password.
+"""
+import asyncio, base64, hashlib, io, json, os, sys, time
+
+import websockets
+from PIL import Image
+
+E = os.environ.get
+CONF = E("SCENESWITCH_CONF", os.path.expanduser("~/.config/obs-studio/plugin_config/obs-websocket/config.json"))
+DIR = E("SCENESWITCH_DIR", os.path.expanduser("~/.local/share/scene-switch"))
+SOURCE = E("SCENESWITCH_SOURCE", "Mevo SRT")
+SCOPE = E("SCENESWITCH_SCOPE", "Scope Camera")
+OVERHEAD = E("SCENESWITCH_OVERHEAD", "Overhead Camera")
+INTERVAL = float(E("SCENESWITCH_INTERVAL", "1.0"))
+HOLD = int(E("SCENESWITCH_HOLD", "3"))
+MAT = tuple(float(x) for x in E("SCENESWITCH_MAT", "0.04,0.03,0.625,0.62").split(","))
+MIN_GAP = 0.05  # the two positions must differ by at least this much white to be told apart
+RETRY = float(E("SCENESWITCH_RETRY", "5"))
+STALE = int(E("SCENESWITCH_STALE", "30"))  # identical looks in a row before the picture counts as frozen
+SIZE = (64, 36)  # what a frame is reduced to before comparing
+POSITIONS = ("in", "parked")
+
+
+def log(*words):
+    print("obs-sceneswitch:", *words, flush=True)
+
+
+# ---------- frames and references ----------
+def reduce(png_or_jpg: bytes) -> bytes:
+    """A frame as SIZE greyscale bytes: small enough to compare, blurred enough to ignore noise."""
+    return Image.open(io.BytesIO(png_or_jpg)).convert("L").resize(SIZE, Image.BILINEAR).tobytes()
+
+
+def ref_dir(position):
+    return os.path.join(DIR, "refs", position)
+
+
+def measure(image: bytes) -> tuple[float, float]:
+    """(white, blue): the share of the mat area that is white-ish, and the share that is mat blue."""
+    im = Image.open(io.BytesIO(image)).convert("RGB").resize((160, 90), Image.BILINEAR)
+    w, h = im.size
+    box = (int(MAT[0] * w), int(MAT[1] * h), int(MAT[2] * w), int(MAT[3] * h))
+    raw = im.crop(box).convert("HSV").tobytes()
+    n = len(raw) // 3
+    white = blue = 0
+    for i in range(0, len(raw), 3):
+        hue, sat, val = raw[i], raw[i + 1], raw[i + 2]
+        if sat < 60 and val > 150:
+            white += 1
+        elif 130 <= hue <= 165 and sat > 110 and val > 90:
+            blue += 1
+    return white / n, blue / n
+
+
+def load_marks():
+    """Per position, the (white, blue) measures of its saved reference pictures."""
+    marks = {}
+    for pos in POSITIONS:
+        marks[pos] = []
+        d = ref_dir(pos)
+        if os.path.isdir(d):
+            for name in sorted(os.listdir(d)):
+                if name.endswith(".png"):
+                    marks[pos].append(measure(open(os.path.join(d, name), "rb").read()))
+    return marks
+
+
+def limits(marks):
+    """(white at or above which the arm is in, white at or below which it is parked,
+    least blue for parked), or None if the references can't tell the positions apart."""
+    if not marks["in"] or not marks["parked"]:
+        return None
+    w_in = min(w for w, _ in marks["in"])
+    w_parked = max(w for w, _ in marks["parked"])
+    gap = w_in - w_parked
+    if gap < MIN_GAP:
+        return None
+    blue_floor = 0.5 * min(b for _, b in marks["parked"])
+    return w_parked + 0.6 * gap, w_parked + 0.4 * gap, blue_floor
+
+
+def classify(white, blue, lim) -> str | None:
+    """'in' | 'parked' | None. In: enough white over the mat. Parked: little white AND the mat
+    still showing, so someone leaning over the bench (no white, no blue) stays unsure."""
+    if lim is None:
+        return None
+    w_in, w_parked, blue_floor = lim
+    if white >= w_in:
+        return "in"
+    if white <= w_parked and blue >= blue_floor:
+        return "parked"
+    return None
+
+
+class Decider:
+    """Turns a stream of looks into at most one decision per real change of position."""
+
+    def __init__(self, hold=HOLD):
+        self.hold = hold
+        self.position = None  # the last position we were sure of
+        self.candidate = None
+        self.count = 0
+
+    def feed(self, seen):
+        """seen: 'in' | 'parked' | None. Returns the new position on a confirmed change, else None."""
+        if seen is None or seen == self.position:
+            self.candidate, self.count = None, 0
+            return None
+        if seen == self.candidate:
+            self.count += 1
+        else:
+            self.candidate, self.count = seen, 1
+        if self.count >= self.hold:
+            first = self.position is None
+            self.position, self.candidate, self.count = seen, None, 0
+            return None if first else seen  # the first sure look sets the baseline; it is not a change
+        return None
+
+
+# ---------- OBS ----------
+class Obs:
+    def __init__(self, ws):
+        self.ws, self.n = ws, 0
+
+    async def identify(self, password):
+        hello = json.loads(await self.ws.recv())["d"]
+        ident = {"rpcVersion": 1, "eventSubscriptions": 0}
+        auth = hello.get("authentication")
+        if auth:
+            secret = base64.b64encode(hashlib.sha256((password + auth["salt"]).encode()).digest())
+            ident["authentication"] = base64.b64encode(hashlib.sha256(secret + auth["challenge"].encode()).digest()).decode()
+        await self.ws.send(json.dumps({"op": 1, "d": ident}))
+        if json.loads(await self.ws.recv())["op"] != 2:
+            raise ConnectionError("OBS refused the connection")
+
+    async def request(self, kind, data=None):
+        self.n += 1
+        rid = str(self.n)
+        await self.ws.send(json.dumps({"op": 6, "d": {"requestType": kind, "requestId": rid, "requestData": data or {}}}))
+        while True:
+            msg = json.loads(await self.ws.recv())
+            if msg["op"] == 7 and msg["d"]["requestId"] == rid:
+                d = msg["d"]
+                return d["requestStatus"]["result"], d.get("responseData") or {}
+
+    async def look(self, width=160, height=90):
+        """The watched source, as image bytes, or None if OBS can't give one."""
+        ok, resp = await self.request(
+            "GetSourceScreenshot",
+            {"sourceName": SOURCE, "imageFormat": "png", "imageWidth": width, "imageHeight": height},
+        )
+        if not ok or "imageData" not in resp:
+            return None
+        return base64.b64decode(resp["imageData"].split(",", 1)[1])
+
+    async def scene(self):
+        ok, resp = await self.request("GetCurrentProgramScene")
+        return resp.get("currentProgramSceneName") if ok else None
+
+    async def set_scene(self, name):
+        ok, _ = await self.request("SetCurrentProgramScene", {"sceneName": name})
+        return ok
+
+
+async def connect():
+    conf = json.load(open(CONF))
+    ws = await websockets.connect(f"ws://127.0.0.1:{conf['server_port']}", max_size=16 * 2**20)
+    obs = Obs(ws)
+    await obs.identify(conf.get("server_password", ""))
+    return obs
+
+
+# ---------- commands ----------
+async def cmd_calibrate(position):
+    obs = await connect()
+    try:
+        img = await obs.look(640, 360)
+        if img is None:
+            log(f"OBS gave no picture for source '{SOURCE}'")
+            return 1
+        os.makedirs(ref_dir(position), exist_ok=True)
+        path = os.path.join(ref_dir(position), time.strftime("%Y%m%d-%H%M%S") + ".png")
+        Image.open(io.BytesIO(img)).save(path)
+        marks = load_marks()
+        log(f"saved '{position}' reference {path}; now have in={len(marks['in'])} parked={len(marks['parked'])}")
+        if marks["in"] and marks["parked"]:
+            describe(marks)
+        return 0
+    finally:
+        await obs.ws.close()
+
+
+def describe(marks):
+    for pos in POSITIONS:
+        log(f"  {pos} references: white " + ", ".join(f"{w:.0%}" for w, _ in marks[pos])
+            + "; blue " + ", ".join(f"{b:.0%}" for _, b in marks[pos]))
+    lim = limits(marks)
+    if lim is None:
+        log("the two positions can't be told apart: the arm-in pictures need clearly more white over the mat")
+    else:
+        log(f"in at {lim[0]:.0%} white or more; parked at {lim[1]:.0%} or less with at least {lim[2]:.0%} blue")
+    return lim
+
+
+async def cmd_status():
+    obs = await connect()
+    try:
+        marks = load_marks()
+        img = await obs.look()
+        scene = await obs.scene()
+        log(f"scene: {scene}; references: in={len(marks['in'])} parked={len(marks['parked'])}")
+        if img is None:
+            log(f"OBS gave no picture for source '{SOURCE}'")
+            return 1
+        if not marks["in"] or not marks["parked"]:
+            log("not calibrated yet: need at least one 'in' and one 'parked' reference")
+            return 0
+        lim = describe(marks)
+        white, blue = measure(img)
+        log(f"sees: {classify(white, blue, lim) or 'unsure'} (mat is {white:.0%} white, {blue:.0%} blue)")
+        return 0
+    finally:
+        await obs.ws.close()
+
+
+async def watch(obs, lim, decider):
+    last, same = None, 0
+    while True:
+        img = await obs.look()
+        if img is not None:
+            frame = reduce(img)
+            same = same + 1 if frame == last else 0
+            last = frame
+            if same == STALE:
+                log(f"the picture from '{SOURCE}' has not changed for {STALE} looks; holding off until it moves")
+            seen = None if same >= STALE else classify(*measure(img), lim)
+            change = decider.feed(seen)
+            if change:
+                scene = await obs.scene()
+                want = SCOPE if change == "in" else OVERHEAD
+                other = OVERHEAD if change == "in" else SCOPE
+                if scene == other:
+                    ok = await obs.set_scene(want)
+                    log(f"arm {change}: {scene} -> {want}" + ("" if ok else " FAILED"))
+                else:
+                    log(f"arm {change}: scene is '{scene}', leaving it alone")
+        await asyncio.sleep(INTERVAL)
+
+
+async def cmd_run():
+    quiet = False
+    decider = Decider()
+    while True:
+        marks = load_marks()
+        lim = limits(marks)
+        if lim is None:
+            if not quiet:
+                log("not calibrated yet (need 'in' and 'parked' references that differ); waiting")
+            quiet = True
+            await asyncio.sleep(RETRY)
+            continue
+        try:
+            obs = await connect()
+            log(f"watching '{SOURCE}': in at {lim[0]:.0%} white over the mat or more, parked at {lim[1]:.0%} or less")
+            quiet = False
+            await watch(obs, lim, decider)
+        except (OSError, websockets.WebSocketException, ConnectionError, KeyError, ValueError) as e:
+            if not quiet:
+                log(f"OBS is not reachable ({type(e).__name__}); retrying every {RETRY:g}s")
+            quiet = True
+            decider = Decider()  # after a gap, take a fresh baseline instead of acting on old news
+        await asyncio.sleep(RETRY)
+
+
+def main(argv):
+    if not argv or argv[0] in {"-h", "--help"}:
+        print(__doc__)
+        return 0
+    if argv[0] == "calibrate" and len(argv) == 2 and argv[1] in POSITIONS:
+        return asyncio.run(cmd_calibrate(argv[1]))
+    if argv[0] == "forget" and len(argv) == 2 and argv[1] in POSITIONS:
+        d = ref_dir(argv[1])
+        n = 0
+        if os.path.isdir(d):
+            for name in os.listdir(d):
+                os.unlink(os.path.join(d, name))
+                n += 1
+        log(f"removed {n} '{argv[1]}' reference(s)")
+        return 0
+    if argv[0] == "status":
+        return asyncio.run(cmd_status())
+    if argv[0] == "run":
+        try:
+            return asyncio.run(cmd_run())
+        except KeyboardInterrupt:
+            return 0
+    print(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

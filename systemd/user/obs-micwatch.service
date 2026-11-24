@@ -1,0 +1,13 @@
+[Unit]
+Description=Reconnect the OBS "DJI Mic" input after the receiver re-appears on USB
+Documentation=file:%h/.local/bin/obs-micwatch
+
+[Service]
+ExecStart=%h/.local/bin/obs-micwatch
+Environment="OBS_MICWATCH_INPUT=DJI Mic"
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

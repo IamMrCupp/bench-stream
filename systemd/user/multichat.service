@@ -1,0 +1,12 @@
+[Unit]
+Description=Merged Twitch + YouTube chat overlay for OBS (megarohas_multichat, run from reviewed source)
+Documentation=file:%h/.local/share/multichat/README.md
+
+[Service]
+WorkingDirectory=%h/.local/share/multichat
+ExecStart=/usr/bin/node %h/.local/share/multichat/server.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
