@@ -139,5 +139,66 @@ class UsbState(unittest.TestCase):
         self.assertIsNone(mw.usb_state(os.path.join(self.root, "nope"), "2ca3:4011"))
 
 
+class SilenceRun(unittest.TestCase):
+    def test_warns_once_after_the_limit_then_says_when_signal_is_back(self):
+        s = mw.Silence(15)
+        self.assertIsNone(s.update(True, 100))
+        self.assertIsNone(s.update(True, 110))
+        warn = s.update(True, 115)
+        self.assertIn("pure silence for 15s", warn)
+        self.assertIsNone(s.update(True, 120))  # once per run
+        self.assertEqual(s.update(False, 125), "signal back on the mic")
+        self.assertIsNone(s.update(False, 130))
+
+    def test_signal_before_the_limit_starts_over(self):
+        s = mw.Silence(15)
+        s.update(True, 100)
+        self.assertIsNone(s.update(False, 110))  # never warned, so nothing to say
+        self.assertIsNone(s.update(True, 112))
+        self.assertIsNone(s.update(True, 120))  # 8 s into the new run
+        self.assertIsNotNone(s.update(True, 127))
+
+    def test_no_reading_changes_nothing(self):
+        s = mw.Silence(15)
+        s.update(True, 100)
+        self.assertIsNone(s.update(None, 200))
+        self.assertIsNotNone(s.update(True, 201))  # the run from 100 still counts
+
+    def test_reset_forgets_the_run_quietly(self):
+        s = mw.Silence(15)
+        s.update(True, 100)
+        s.update(True, 120)
+        s.reset()
+        self.assertIsNone(s.update(False, 121))  # no "signal back" after a relink
+        self.assertIsNone(s.update(True, 130))
+        self.assertIsNone(s.update(True, 140))
+
+    def test_zero_limit_never_warns(self):
+        s = mw.Silence(0)
+        for t in range(0, 100, 5):
+            self.assertIsNone(s.update(True, t))
+
+
+class IsSilent(unittest.TestCase):
+    def s16(self, *xs):
+        import struct
+        return struct.pack(f"<{len(xs)}h", *xs)
+
+    def test_all_zero_is_silent(self):
+        self.assertTrue(mw.is_silent(self.s16(0, 0, 0, 0)))
+
+    def test_a_quiet_noise_floor_is_not_silent(self):
+        # 228, the bench's room noise with nobody talking; one non-zero sample is enough
+        self.assertFalse(mw.is_silent(self.s16(0, 228, 0, 0)))
+        self.assertFalse(mw.is_silent(self.s16(0, 0, -1, 0)))
+
+    def test_nothing_read_is_no_answer(self):
+        self.assertIsNone(mw.is_silent(b""))
+        self.assertIsNone(mw.is_silent(b"\x00"))  # less than one sample
+
+    def test_a_trailing_partial_sample_is_ignored(self):
+        self.assertTrue(mw.is_silent(self.s16(0, 0) + b"\x01"))
+
+
 if __name__ == "__main__":
     unittest.main()

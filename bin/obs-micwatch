@@ -13,6 +13,12 @@ vendor-specific interface, a different serial). There's nothing to reconnect to
 then, so this says so in the log: the receiver needs a replug. It looks for the
 receiver on USB by OBS_MICWATCH_USB (vendor:product, default 2ca3:4011).
 
+While the input is linked it also samples the source every OBS_MICWATCH_SILENCE_EVERY
+seconds (default 5). If every sample has been exact digital zero for
+OBS_MICWATCH_SILENCE seconds (default 15; 0 turns it off), it logs that the
+transmitter's link is probably down, and logs again when signal comes back. A
+real mic's noise floor is never exact zero; a receiver with no transmitter is.
+
 Checks every OBS_MICWATCH_INTERVAL seconds (default 2). Input name from
 OBS_MICWATCH_INPUT (default "DJI Mic"). The device is read from OBS, not set here.
 """
@@ -23,6 +29,8 @@ INPUT = os.environ.get("OBS_MICWATCH_INPUT", "DJI Mic")
 INTERVAL = float(os.environ.get("OBS_MICWATCH_INTERVAL", "2"))
 COOLDOWN = float(os.environ.get("OBS_MICWATCH_COOLDOWN", "10"))
 PLACEHOLDER = "obs-micwatch-reconnecting"
+SILENCE = float(os.environ.get("OBS_MICWATCH_SILENCE", "15"))
+SILENCE_EVERY = float(os.environ.get("OBS_MICWATCH_SILENCE_EVERY", "5"))
 USB_ID = os.environ.get("OBS_MICWATCH_USB", "2ca3:4011")
 USB_DEVICES = "/sys/bus/usb/devices"
 
@@ -106,6 +114,59 @@ def usb_state(root=USB_DEVICES, usb_id=USB_ID):
     return found
 
 
+class Silence:
+    """Tracks runs of pure digital silence on the linked source. Log lines come back from update()."""
+
+    def __init__(self, limit):
+        self.limit, self.since, self.warned = limit, None, False
+
+    def update(self, silent, now):
+        """silent: True for all-zero samples, False for any signal, None for no reading."""
+        if silent is None:
+            return None
+        if not silent:
+            back = self.warned
+            self.since, self.warned = None, False
+            return "signal back on the mic" if back else None
+        if self.since is None:
+            self.since = now
+        if not self.warned and self.limit > 0 and now - self.since >= self.limit:
+            self.warned = True
+            return (f"mic has sent pure silence for {now - self.since:.0f}s while linked"
+                    " (transmitter link down, or transmitter muted?)")
+        return None
+
+    def reset(self):
+        """The source went away or got relinked: forget the run, say nothing."""
+        self.since, self.warned = None, False
+
+
+def is_silent(data):
+    """True if raw s16 samples are all exact zero, None if there's nothing to judge."""
+    n = len(data) // 2
+    if n == 0:
+        return None
+    return data[:n * 2].count(0) == n * 2
+
+
+def sample(source, seconds=1):
+    """About a second of the source as raw s16 stereo, or b"" if it can't be read.
+
+    node.dont-fallback matters: without it, parec on a source that has just
+    gone away quietly records the default source instead, and another mic's
+    noise would read as "signal back".
+    """
+    try:
+        return subprocess.run(["timeout", str(seconds), "parec", "-d", source, "--raw",
+                               "--format=s16le", "--channels=2", "--rate=48000",
+                               "--latency-msec=50",  # without it parec buffers ~2 s and a 1 s run reads nothing
+                               "--client-name=obs-micwatch"],
+                              capture_output=True, timeout=seconds + 5,
+                              env={**os.environ, "PULSE_PROP": "node.dont-fallback=true node.dont-reconnect=true"}).stdout
+    except (OSError, subprocess.SubprocessError):
+        return b""
+
+
 def pipewire_state():
     def pj(*args):
         return json.loads(subprocess.run(["pactl", "-f", "json", *args], capture_output=True,
@@ -159,6 +220,7 @@ class Obs:
 
 async def run():
     obs, last_fix, last_reason = Obs(), 0.0, None
+    silence, last_sample = Silence(SILENCE), 0.0
     while True:
         try:
             if obs.ws is None:
@@ -171,6 +233,14 @@ async def run():
             if reason != last_reason:
                 log(reason)
                 last_reason = reason
+            if reason != "linked":
+                silence.reset()
+            elif SILENCE > 0 and time.monotonic() - last_sample >= SILENCE_EVERY:
+                last_sample = time.monotonic()
+                data = await asyncio.to_thread(sample, dev)
+                msg = silence.update(is_silent(data), time.monotonic())
+                if msg:
+                    log(msg)
             if action == "reconnect" and time.monotonic() - last_fix >= COOLDOWN:
                 log(f"reconnecting {INPUT!r} to {dev}")
                 await obs.set_device(PLACEHOLDER)
