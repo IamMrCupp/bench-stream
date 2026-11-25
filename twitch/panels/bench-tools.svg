@@ -6,7 +6,7 @@
   <circle cx="16" cy="50" r="3.5" fill="#e0a630"/>
   <circle cx="82" cy="50" r="3.5" fill="#e0a630"/>
   <text x="96" y="52" font-family="Avenir Next, Helvetica Neue, Arial, sans-serif" font-weight="bold" font-size="27" letter-spacing="0.5" fill="#ffffff">BENCH TOOLS</text>
-  <text x="97" y="72" font-family="Avenir Next, Helvetica Neue, Arial, sans-serif" font-weight="600" font-size="12" letter-spacing="0.3" fill="#7fd3e0">built for this bench · open source</text>
+  <text x="97" y="72" font-family="Avenir Next, Helvetica Neue, Arial, sans-serif" font-weight="600" font-size="12" letter-spacing="0.3" fill="#7fd3e0">what runs this bench · open source</text>
   <!-- the HUD's meter colours: voltage, current, power -->
   <rect x="97" y="80" width="62" height="5" rx="2.5" fill="#f2d24b"/>
   <rect x="164" y="80" width="62" height="5" rx="2.5" fill="#5fd0dc"/>

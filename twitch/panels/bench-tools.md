@@ -16,11 +16,11 @@ What runs this stream and this bench. All open source.
 
 **[benchhud](https://github.com/IamMrCupp/benchhud)** — the HUD. Scope and thermal camera in one picture, so the part that's cooking glows. Plus live meters and the job card.
 
-**[multichat](https://github.com/IamMrCupp/megarohas_multichat)** — Twitch and YouTube chat in one overlay. My fork of [megarohas's](https://github.com/megarohas/megarohas_multichat) MIT project, plus a reply dock. duplexchat, its Go rewrite, is next.
+**[multichat](https://github.com/IamMrCupp/megarohas_multichat)** — Twitch and YouTube chat in one overlay. My fork of [megarohas's](https://github.com/megarohas/megarohas_multichat) MIT project, plus a reply dock. duplexchat, its Go rewrite, is in progress.
 
 **[bench-stream](https://github.com/IamMrCupp/bench-stream)** — OBS helpers: scene switching, mic recovery, camera tuning.
 
-**[bench-parts](https://github.com/IamMrCupp/bench-parts)** — parts inventory, used against each job.
+**[bench-parts](https://github.com/IamMrCupp/bench-parts)** — parts inventory, used against a job.
 
 **[benchhud-intake](https://github.com/IamMrCupp/benchhud-intake)** — job intake. Customer details live here, nowhere the stream can see.
 
@@ -42,7 +42,7 @@ From Twitch's help center, checked 2026-11-24:
 
 ## Changing the image
 
-Edit the SVG, then re-render:
+Edit the SVG, then re-render on a Mac. The text is set in Avenir Next; elsewhere rsvg falls back to a wider font and the title can run into the border.
 
 ```sh
 rsvg-convert -w 320 -h 100 bench-tools.svg -o bench-tools.png
