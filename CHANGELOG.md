@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/IamMrCupp/bench-stream/compare/v0.3.1...v0.3.2) (2026-11-25)
+
+
+### Documentation
+
+* **twitch:** mention multichat's stream info presets in the bench tools panel ([bf20b61](https://github.com/IamMrCupp/bench-stream/commit/bf20b61b69b1c89eaa35a4eddc47aed68bcc4b30))
+
 ## [0.3.1](https://github.com/IamMrCupp/bench-stream/compare/v0.3.0...v0.3.1) (2026-11-25)
 
 
