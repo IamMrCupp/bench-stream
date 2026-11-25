@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.1](https://github.com/IamMrCupp/bench-stream/compare/v0.3.0...v0.3.1) (2026-11-25)
+
+
+### Documentation
+
+* **twitch:** add the bench tools About panel ([9c4c60d](https://github.com/IamMrCupp/bench-stream/commit/9c4c60d361192949a7f0099b7c9353ea944e0346))
+* **twitch:** list the multichat fork the bench runs, credit upstream ([5ce10ab](https://github.com/IamMrCupp/bench-stream/commit/5ce10ab2fc51f3e6101f7d0947ee8a13b0890f92))
+* **twitch:** match the panel tagline to what's listed, note the render font ([c2a0616](https://github.com/IamMrCupp/bench-stream/commit/c2a06160d53f6d03738a0fd5f4ab2efa751a6aa1))
+
 ## [0.3.0](https://github.com/IamMrCupp/bench-stream/compare/v0.2.1...v0.3.0) (2026-11-25)
 
 
