@@ -6,6 +6,8 @@ name: release-pr-automerge
 # only the release PR, and only at the commit CI passed on.
 #
 # workflow_run always runs this file as it is on main, never a PR's copy.
+# A fork can name its branch like the release branch, so the run must come
+# from this repo, not only carry that name.
 
 on:
   workflow_run:
@@ -20,7 +22,8 @@ jobs:
   merge:
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'pull_request'
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Merge the release PR
