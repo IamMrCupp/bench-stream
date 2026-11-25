@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/IamMrCupp/bench-stream/compare/v0.2.0...v0.2.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **micwatch:** name a serial mismatch, don't say replug while the receiver enumerates ([8117016](https://github.com/IamMrCupp/bench-stream/commit/811701647d170c5bc23a4d8ec1ed5f5318cbdf77))
+* **micwatch:** say when the DJI receiver comes back on USB with no audio ([0601c0f](https://github.com/IamMrCupp/bench-stream/commit/0601c0fe6fa03e97a8c12353060f0f746d57ff98))
+
 ## [0.2.0](https://github.com/IamMrCupp/bench-stream/compare/v0.1.0...v0.2.0) (2026-11-25)
 
 
