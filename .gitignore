@@ -6,6 +6,8 @@ refs/
 samples/
 *.png
 *.jpg
+# Drawn panel art, not camera frames.
+!twitch/panels/*.png
 
 # claude-project-kit — managed block START
 # Local-only Claude Code state — installed globally via install-commands.sh
