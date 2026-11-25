@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/IamMrCupp/bench-stream/compare/v0.1.0...v0.2.0) (2026-11-25)
+
+
+### Features
+
+* **sceneswitch:** follow window focus and add Meta+number scene shortcuts ([88f77d6](https://github.com/IamMrCupp/bench-stream/commit/88f77d674c8c0a7532e2970bc5315d188c273e48))
+
+
+### Bug Fixes
+
+* **sceneswitch:** keep the arm's position across reconnects, bound focus switches, no launch feedback ([b56938e](https://github.com/IamMrCupp/bench-stream/commit/b56938ef490c6c1f3a51d6691382fe9a59cef05e))
+
 ## 0.1.0 (2026-11-24)
 
 
