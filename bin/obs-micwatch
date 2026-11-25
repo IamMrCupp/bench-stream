@@ -16,7 +16,7 @@ receiver on USB by OBS_MICWATCH_USB (vendor:product, default 2ca3:4011).
 Checks every OBS_MICWATCH_INTERVAL seconds (default 2). Input name from
 OBS_MICWATCH_INPUT (default "DJI Mic"). The device is read from OBS, not set here.
 """
-import asyncio, base64, hashlib, json, os, subprocess, sys, time
+import asyncio, base64, hashlib, json, os, re, subprocess, sys, time
 
 CONF = os.path.expanduser("~/.config/obs-studio/plugin_config/obs-websocket/config.json")
 INPUT = os.environ.get("OBS_MICWATCH_INPUT", "DJI Mic")
@@ -46,7 +46,7 @@ def decide(device_id, sources, outputs, input_name, usb=None):
     if not device_id or device_id in ("default", PLACEHOLDER):
         return "ok", "input not pinned to a device"
     if device_id not in sources:
-        return "ok", absent_reason(usb)
+        return "ok", absent_reason(usb, device_id)
     want = sources[device_id]
     mine = [src for src, name in outputs if name == input_name]
     if not mine:
@@ -56,20 +56,30 @@ def decide(device_id, sources, outputs, input_name, usb=None):
     return "reconnect", f"stream on source {mine[0]}, device is source {want}"
 
 
-def absent_reason(usb):
+def absent_reason(usb, device_id=""):
+    """Why OBS's device isn't in PipeWire, from usb_state()'s view of the receiver."""
     if usb is None:
         return "device absent"
     if not usb:
         return f"device absent: receiver ({USB_ID}) isn't on USB"
-    mute = [serial for serial, audio in usb if not audio]
-    if mute and len(mute) == len(usb):
-        return (f"device absent: receiver is on USB with no audio interface (serial {mute[0] or '?'}),"
+    with_audio = [serial for serial, audio in usb if audio]
+    if with_audio:
+        if any(serial and serial in device_id for serial in with_audio):
+            return "device absent: receiver has audio on USB, waiting for PipeWire's source"
+        return (f"device absent: receiver has audio on USB under serial {with_audio[0] or '?'},"
+                " but OBS's input is set to a different device")
+    if all(audio is False for _, audio in usb):
+        return (f"device absent: receiver is on USB with no audio interface (serial {usb[0][0] or '?'}),"
                 " replug it")
-    return "device absent: receiver has audio on USB, waiting for PipeWire's source"
+    return "device absent: receiver is still coming up on USB"
 
 
 def usb_state(root=USB_DEVICES, usb_id=USB_ID):
-    """[(serial, has audio interface)] for each USB device matching vendor:product."""
+    """[(serial, audio)] for each USB device matching vendor:product, or None if sysfs is unreadable.
+
+    audio is True with an audio-class interface, False with only other interfaces,
+    None with no interfaces yet (the kernel is still configuring it).
+    """
     vid, _, pid = usb_id.lower().partition(":")
     found = []
     try:
@@ -79,7 +89,7 @@ def usb_state(root=USB_DEVICES, usb_id=USB_ID):
 
     def read(*parts):
         try:
-            with open(os.path.join(root, *parts)) as f:
+            with open(os.path.join(root, *parts), errors="replace") as f:
                 return f.read().strip()
         except OSError:
             return ""
@@ -91,7 +101,7 @@ def usb_state(root=USB_DEVICES, usb_id=USB_ID):
             ifaces = [i for i in os.listdir(os.path.join(root, dev)) if i.startswith(dev + ":")]
         except OSError:
             ifaces = []
-        audio = any(read(dev, i, "bInterfaceClass") == "01" for i in ifaces)
+        audio = any(read(dev, i, "bInterfaceClass") == "01" for i in ifaces) if ifaces else None
         found.append((read(dev, "serial"), audio))
     return found
 
@@ -156,7 +166,8 @@ async def run():
                 log(f"connected to OBS, watching input {INPUT!r}")
             dev = await obs.device_id()
             sources, outputs = pipewire_state()
-            action, reason = decide(dev, sources, outputs, INPUT, usb_state())
+            usb = None if dev in sources else usb_state()  # only matters when the source is missing
+            action, reason = decide(dev, sources, outputs, INPUT, usb)
             if reason != last_reason:
                 log(reason)
                 last_reason = reason
@@ -183,4 +194,6 @@ async def run():
 
 
 if __name__ == "__main__":
+    if not re.fullmatch(r"[0-9a-fA-F]{4}:[0-9a-fA-F]{4}", USB_ID):
+        sys.exit(f"OBS_MICWATCH_USB must be vendor:product in hex, like 2ca3:4011, not {USB_ID!r}")
     asyncio.run(run())

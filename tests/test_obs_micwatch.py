@@ -40,8 +40,8 @@ class Decide(unittest.TestCase):
 
 
 class Absent(unittest.TestCase):
-    def reason(self, usb):
-        action, reason = mw.decide(DEV, {}, [], "DJI Mic", usb)
+    def reason(self, usb, dev="alsa_input.usb-DJI_Wireless_Mic_Rx_XSP12345678B-01.analog-stereo"):
+        action, reason = mw.decide(dev, {}, [], "DJI Mic", usb)
         self.assertEqual(action, "ok")  # nothing to link to in any of these
         return reason
 
@@ -56,6 +56,19 @@ class Absent(unittest.TestCase):
 
     def test_audio_mode_waits_for_pipewire(self):
         self.assertIn("waiting for PipeWire", self.reason([("XSP12345678B", True)]))
+
+    def test_audio_under_another_serial_says_obs_points_elsewhere(self):
+        r = self.reason([("NEWSERIAL", True)])
+        self.assertIn("NEWSERIAL", r)
+        self.assertIn("different device", r)
+
+    def test_still_enumerating_is_not_a_replug(self):
+        r = self.reason([("0123456789AB", None)])
+        self.assertNotIn("replug", r)
+        self.assertIn("coming up", r)
+
+    def test_replug_only_when_every_match_lacks_audio(self):
+        self.assertIn("waiting for PipeWire", self.reason([("0123456789AB", False), ("XSP12345678B", True)]))
 
     def test_unknown_usb_state(self):
         self.assertEqual(self.reason(None), "device absent")
@@ -77,6 +90,8 @@ class UsbState(unittest.TestCase):
     def device(self, name, vid, pid, serial, classes):
         os.makedirs(os.path.join(self.root, name))
         for f, v in (("idVendor", vid), ("idProduct", pid), ("serial", serial)):
+            if v is None:
+                continue
             with open(os.path.join(self.root, name, f), "w") as fh:
                 fh.write(v + "\n")
         for n, cls in classes.items():
@@ -98,6 +113,27 @@ class UsbState(unittest.TestCase):
     def test_other_devices_are_ignored(self):
         self.device("1-4", "0fd9", "00a1", "CAM", {0: "01"})
         self.assertEqual(mw.usb_state(self.root, "2ca3:4011"), [])
+
+    def test_no_interfaces_yet_is_unknown_audio(self):
+        self.device("1-3", "2ca3", "4011", "0123456789AB", {})
+        self.assertEqual(mw.usb_state(self.root, "2ca3:4011"), [("0123456789AB", None)])
+
+    def test_missing_serial_reads_empty(self):
+        self.device("1-3", "2ca3", "4011", None, {6: "ff"})
+        self.assertEqual(mw.usb_state(self.root, "2ca3:4011"), [("", False)])
+        self.assertIn("serial ?", mw.absent_reason([("", False)]))
+
+    def test_undecodable_serial_does_not_raise(self):
+        self.device("1-3", "2ca3", "4011", "x", {6: "ff"})
+        with open(os.path.join(self.root, "1-3", "serial"), "wb") as fh:
+            fh.write(b"\xff\xfe\n")
+        self.assertEqual(len(mw.usb_state(self.root, "2ca3:4011")), 1)
+
+    def test_hubs_and_other_devices_alongside(self):
+        self.device("usb1", "1d6b", "0002", "0000:05:00.3", {0: "09"})
+        self.device("1-3", "2ca3", "4011", "XSP12345678B", {0: "03", 1: "01"})
+        self.device("1-3.2", "0fd9", "00a1", "CAM", {0: "01"})
+        self.assertEqual(mw.usb_state(self.root, "2ca3:4011"), [("XSP12345678B", True)])
 
     def test_missing_root_is_unknown(self):
         self.assertIsNone(mw.usb_state(os.path.join(self.root, "nope"), "2ca3:4011"))
