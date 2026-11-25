@@ -8,6 +8,11 @@ that and re-applies the input's device through obs-websocket: first a
 placeholder device that doesn't exist (so nothing else is captured in between),
 then the real one.
 
+The receiver sometimes re-appears in a mode with no audio interface at all (one
+vendor-specific interface, a different serial). There's nothing to reconnect to
+then, so this says so in the log: the receiver needs a replug. It looks for the
+receiver on USB by OBS_MICWATCH_USB (vendor:product, default 2ca3:4011).
+
 Checks every OBS_MICWATCH_INTERVAL seconds (default 2). Input name from
 OBS_MICWATCH_INPUT (default "DJI Mic"). The device is read from OBS, not set here.
 """
@@ -18,6 +23,8 @@ INPUT = os.environ.get("OBS_MICWATCH_INPUT", "DJI Mic")
 INTERVAL = float(os.environ.get("OBS_MICWATCH_INTERVAL", "2"))
 COOLDOWN = float(os.environ.get("OBS_MICWATCH_COOLDOWN", "10"))
 PLACEHOLDER = "obs-micwatch-reconnecting"
+USB_ID = os.environ.get("OBS_MICWATCH_USB", "2ca3:4011")
+USB_DEVICES = "/sys/bus/usb/devices"
 
 
 class RequestFailed(RuntimeError):
@@ -28,17 +35,18 @@ def log(msg):
     print(time.strftime("%H:%M:%S"), msg, flush=True)
 
 
-def decide(device_id, sources, outputs, input_name):
+def decide(device_id, sources, outputs, input_name, usb=None):
     """Return (action, reason). action is "reconnect" or "ok".
 
     device_id: the OBS input's device_id setting.
     sources: {source name: index} from PipeWire.
     outputs: [(source index, media.name)] for OBS's capture streams.
+    usb: [(serial, has audio interface)] for the receiver on USB, or None if unknown.
     """
     if not device_id or device_id in ("default", PLACEHOLDER):
         return "ok", "input not pinned to a device"
     if device_id not in sources:
-        return "ok", "device absent (receiver has no audio, transmitters off?)"
+        return "ok", absent_reason(usb)
     want = sources[device_id]
     mine = [src for src, name in outputs if name == input_name]
     if not mine:
@@ -46,6 +54,46 @@ def decide(device_id, sources, outputs, input_name):
     if want in mine:
         return "ok", "linked"
     return "reconnect", f"stream on source {mine[0]}, device is source {want}"
+
+
+def absent_reason(usb):
+    if usb is None:
+        return "device absent"
+    if not usb:
+        return f"device absent: receiver ({USB_ID}) isn't on USB"
+    mute = [serial for serial, audio in usb if not audio]
+    if mute and len(mute) == len(usb):
+        return (f"device absent: receiver is on USB with no audio interface (serial {mute[0] or '?'}),"
+                " replug it")
+    return "device absent: receiver has audio on USB, waiting for PipeWire's source"
+
+
+def usb_state(root=USB_DEVICES, usb_id=USB_ID):
+    """[(serial, has audio interface)] for each USB device matching vendor:product."""
+    vid, _, pid = usb_id.lower().partition(":")
+    found = []
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return None
+
+    def read(*parts):
+        try:
+            with open(os.path.join(root, *parts)) as f:
+                return f.read().strip()
+        except OSError:
+            return ""
+
+    for dev in names:
+        if ":" in dev or read(dev, "idVendor").lower() != vid or read(dev, "idProduct").lower() != pid:
+            continue
+        try:
+            ifaces = [i for i in os.listdir(os.path.join(root, dev)) if i.startswith(dev + ":")]
+        except OSError:
+            ifaces = []
+        audio = any(read(dev, i, "bInterfaceClass") == "01" for i in ifaces)
+        found.append((read(dev, "serial"), audio))
+    return found
 
 
 def pipewire_state():
@@ -108,7 +156,7 @@ async def run():
                 log(f"connected to OBS, watching input {INPUT!r}")
             dev = await obs.device_id()
             sources, outputs = pipewire_state()
-            action, reason = decide(dev, sources, outputs, INPUT)
+            action, reason = decide(dev, sources, outputs, INPUT, usb_state())
             if reason != last_reason:
                 log(reason)
                 last_reason = reason
