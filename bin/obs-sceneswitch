@@ -69,6 +69,7 @@ APPS = E("SCENESWITCH_APPS", "org.sigrok.pulseview=Logic Analyzer,openboardview=
 HUD = E("SCENESWITCH_HUD", "benchhud")
 BUS_NAME = "io.github.iammrcupp.SceneSwitch"  # what the KWin script calls; kde/kwin has the same names
 BUS_PATH = "/SceneSwitch"
+FOCUS_TIMEOUT = 5.0  # seconds a focus switch may take before it's given up, so a hung OBS can't hold the arm
 
 
 def log(*words):
@@ -318,10 +319,11 @@ class State:
 
     def __init__(self):
         self.decider = Decider()
+        self.arm = None  # last sure position; unlike the decider's, kept across OBS reconnects
         self.lock = asyncio.Lock()
 
     def camera(self):
-        return SCOPE if self.decider.position == "in" else OVERHEAD
+        return SCOPE if self.arm == "in" else OVERHEAD
 
 
 async def watch(obs, lim, state):
@@ -336,6 +338,7 @@ async def watch(obs, lim, state):
                 log(f"the picture from '{SOURCE}' has not changed for {STALE} looks; holding off until it moves")
             seen = None if same >= STALE else classify(*measure(img), lim)
             change = state.decider.feed(seen)
+            state.arm = state.decider.position or state.arm
             if change:
                 async with state.lock:
                     scene = await obs.scene()
@@ -382,20 +385,25 @@ async def follow_focus(events, state):
         target = focus.feed(resource_class, desktop_file)
         if target is None:
             continue
+        who = resource_class or desktop_file
         async with state.lock:
             want = state.camera() if target is HUD_TARGET else target
             try:
-                obs = await connect()
-                try:
-                    scene = await obs.scene()
-                    if scene != want:
-                        ok = await obs.set_scene(want)
-                        log(f"focus {resource_class or desktop_file}: {scene} -> {want}"
-                            + ("" if ok else " FAILED (is there a scene by that name?)"))
-                finally:
-                    await obs.ws.close()
-            except (OSError, websockets.WebSocketException, ConnectionError, KeyError, ValueError) as e:
-                log(f"focus {resource_class or desktop_file}: OBS is not reachable ({type(e).__name__})")
+                await asyncio.wait_for(switch_to(want, who), FOCUS_TIMEOUT)
+            except (OSError, websockets.WebSocketException, ConnectionError, KeyError, ValueError,
+                    asyncio.TimeoutError) as e:
+                log(f"focus {who}: OBS is not reachable ({type(e).__name__})")
+
+
+async def switch_to(want, who):
+    obs = await connect()
+    try:
+        scene = await obs.scene()
+        if scene != want:
+            ok = await obs.set_scene(want)
+            log(f"focus {who}: {scene} -> {want}" + ("" if ok else " FAILED (is there a scene by that name?)"))
+    finally:
+        await obs.ws.close()
 
 
 def listen_for_focus(report):

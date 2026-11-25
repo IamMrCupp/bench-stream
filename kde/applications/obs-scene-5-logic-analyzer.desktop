@@ -5,4 +5,5 @@ Comment=Switch OBS's program scene to Logic Analyzer (Meta+5)
 Exec=obsctl SetCurrentProgramScene "{\\"sceneName\\": \\"Logic Analyzer\\"}"
 Icon=com.obsproject.Studio
 NoDisplay=true
+StartupNotify=false
 X-KDE-Shortcuts=Meta+5

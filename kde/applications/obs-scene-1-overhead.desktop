@@ -5,4 +5,5 @@ Comment=Switch OBS's program scene to Overhead Camera (Meta+1)
 Exec=obsctl SetCurrentProgramScene "{\\"sceneName\\": \\"Overhead Camera\\"}"
 Icon=com.obsproject.Studio
 NoDisplay=true
+StartupNotify=false
 X-KDE-Shortcuts=Meta+1

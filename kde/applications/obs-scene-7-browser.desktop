@@ -5,4 +5,5 @@ Comment=Switch OBS's program scene to Browser (Meta+7)
 Exec=obsctl SetCurrentProgramScene "{\\"sceneName\\": \\"Browser\\"}"
 Icon=com.obsproject.Studio
 NoDisplay=true
+StartupNotify=false
 X-KDE-Shortcuts=Meta+7

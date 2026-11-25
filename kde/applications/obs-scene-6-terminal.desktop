@@ -5,4 +5,5 @@ Comment=Switch OBS's program scene to Terminal (Meta+6)
 Exec=obsctl SetCurrentProgramScene "{\\"sceneName\\": \\"Terminal\\"}"
 Icon=com.obsproject.Studio
 NoDisplay=true
+StartupNotify=false
 X-KDE-Shortcuts=Meta+6

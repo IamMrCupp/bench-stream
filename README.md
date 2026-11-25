@@ -59,7 +59,7 @@ After an update to the script, turn it off and on again the same way (`false`, r
 | The HUD | Scope Camera with the arm in, Overhead Camera otherwise |
 | Anything else | No change |
 
-It switches only when focus moves to a different app, so a scene picked by hand stays until you click into another one. There's no idle timer. The arm still switches only between Overhead and Scope, so it never pulls you off an app scene. Change the list with `SCENESWITCH_APPS` and `SCENESWITCH_HUD` in the unit (see the top of the script).
+It switches only when focus moves to a different app, so a scene picked by hand stays until you click into another one, OBS and system dialogs included. If OBS wasn't running when focus moved, click away and back. There's no idle timer. For the first few seconds after the service starts, and until the arm is calibrated, the HUD goes to Overhead Camera. The arm still switches only between Overhead and Scope, so it never pulls you off an app scene. Change the list with `SCENESWITCH_APPS` and `SCENESWITCH_HUD` in the unit (see the top of the script).
 
 Terminal and Browser are shortcut-only on purpose: what's on those screens is never put on stream by clicking into a window.
 

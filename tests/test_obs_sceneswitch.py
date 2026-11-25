@@ -345,6 +345,22 @@ async def test_focus_does_not_fight_the_arm():
     await harness(FakeObs("parked", "Overhead Camera"), body)
 
 
+async def test_the_hud_remembers_the_arm_across_an_obs_reconnect():
+    async def body(fake, mod):
+        await settle(fake)
+        fake.position = "in"
+        await until(lambda: fake.switches == ["Scope Camera"])
+        fake.focus("openboardview")
+        await until(lambda: fake.scene == "Board View")
+        n = fake.looks
+        for c in list(fake.clients):
+            await c.close()  # OBS restarts: the arm watcher starts over with a fresh baseline
+        await until(lambda: fake.looks > n)
+        fake.focus("benchhud")
+        await until(lambda: fake.scene == "Scope Camera")
+    await harness(FakeObs("parked", "Overhead Camera"), body)
+
+
 async def test_focus_works_before_the_arm_is_calibrated():
     async def body(fake, mod):
         await asyncio.sleep(0.2)
@@ -431,6 +447,7 @@ def test_the_scene_shortcuts():
         assert argv[:2] == ["obsctl", "SetCurrentProgramScene"] and len(argv) == 3, argv
         got[int(key.group(1))] = json.loads(argv[2])["sceneName"]
         assert e["NoDisplay"] == "true" and e["Type"] == "Application"
+        assert e["StartupNotify"] == "false"  # obsctl opens no window: no busy cursor waiting for one
     assert got == want, got
 
 
