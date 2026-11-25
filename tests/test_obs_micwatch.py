@@ -1,5 +1,5 @@
 """Tests for obs-micwatch's decision. Run: python3 tests/test_obs_micwatch.py [path/to/obs-micwatch]"""
-import importlib.machinery, importlib.util, os, sys, tempfile, unittest
+import asyncio, importlib.machinery, importlib.util, os, subprocess, sys, tempfile, unittest
 
 PATH = sys.argv.pop(1) if len(sys.argv) > 1 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin", "obs-micwatch")
 loader = importlib.machinery.SourceFileLoader("micwatch", PATH)
@@ -137,6 +137,154 @@ class UsbState(unittest.TestCase):
 
     def test_missing_root_is_unknown(self):
         self.assertIsNone(mw.usb_state(os.path.join(self.root, "nope"), "2ca3:4011"))
+
+
+class SilenceRun(unittest.TestCase):
+    def test_warns_once_after_the_limit_then_says_when_signal_is_back(self):
+        s = mw.Silence(15)
+        self.assertIsNone(s.update(True, 100))
+        self.assertIsNone(s.update(True, 110))
+        warn = s.update(True, 115)
+        self.assertIn("pure silence for at least 15s", warn)
+        self.assertIsNone(s.update(True, 120))  # once per run
+        self.assertEqual(s.update(False, 125), "signal back on the mic")
+        self.assertIsNone(s.update(False, 130))
+
+    def test_signal_before_the_limit_starts_over(self):
+        s = mw.Silence(15)
+        s.update(True, 100)
+        self.assertIsNone(s.update(False, 110))  # never warned, so nothing to say
+        self.assertIsNone(s.update(True, 112))
+        self.assertIsNone(s.update(True, 120))  # 8 s into the new run
+        self.assertIsNotNone(s.update(True, 127))
+
+    def test_a_failed_read_breaks_the_run(self):
+        s = mw.Silence(15)
+        s.update(True, 100)
+        self.assertIsNone(s.update(None, 200))
+        self.assertIsNone(s.update(True, 201))  # a new run starts here, not at 100
+        self.assertIsNotNone(s.update(True, 216))
+
+    def test_repeated_failed_reads_are_logged_once_and_recovery_too(self):
+        s = mw.Silence(15)
+        self.assertIsNone(s.update(None, 0))
+        self.assertIsNone(s.update(None, 5))
+        self.assertIn("can't read", s.update(None, 10))
+        self.assertIsNone(s.update(None, 15))
+        self.assertIn("again", s.update(False, 20))
+        self.assertIsNone(s.update(False, 25))
+
+    def test_reset_forgets_the_run_quietly(self):
+        s = mw.Silence(15)
+        s.update(True, 100)
+        s.update(True, 120)
+        s.reset()
+        self.assertIsNone(s.update(False, 121))  # no "signal back" after a relink
+        self.assertIsNone(s.update(True, 130))
+        self.assertIsNone(s.update(True, 140))
+
+
+class SilenceTick(unittest.TestCase):
+    """The per-poll wiring run() uses, with a fake sampler instead of parec."""
+
+    ZERO, NOISE = b"\x00" * 8, b"\x00\x00\xe4\x00" * 2
+
+    def setUp(self):
+        self.reads = []
+
+    def reader(self, data):
+        def read(device):
+            self.reads.append(device)
+            return data
+        return read
+
+    def tick(self, s, reason, now, data):
+        return asyncio.run(s.tick(reason, "dji", now, self.reader(data)))
+
+    def test_samples_only_while_linked_and_only_every_few_seconds(self):
+        s = mw.Silence(15, every=5)
+        self.tick(s, "linked", 0, self.ZERO)
+        self.tick(s, "linked", 2, self.ZERO)   # too soon
+        self.tick(s, "linked", 5, self.ZERO)
+        self.tick(s, "device absent", 7, self.ZERO)
+        self.assertEqual(self.reads, ["dji", "dji"])
+
+    def test_silence_while_linked_warns(self):
+        s = mw.Silence(15, every=5)
+        msgs = [self.tick(s, "linked", t, self.ZERO) for t in (0, 5, 10, 15)]
+        self.assertEqual(msgs[:3], [None, None, None])
+        self.assertIn("pure silence", msgs[3])
+
+    def test_leaving_linked_resets_the_run(self):
+        s = mw.Silence(15, every=5)
+        for t in (0, 5, 10):
+            self.tick(s, "linked", t, self.ZERO)
+        self.tick(s, "stream on source 1, device is source 2", 12, self.ZERO)
+        self.assertIsNone(self.tick(s, "linked", 15, self.ZERO))  # a fresh run, not 15 s old
+
+    def test_noise_never_warns(self):
+        s = mw.Silence(15, every=5)
+        self.assertEqual([self.tick(s, "linked", t, self.NOISE) for t in range(0, 60, 5)], [None] * 12)
+
+    def test_zero_limit_never_samples(self):
+        s = mw.Silence(0, every=5)
+        for t in range(0, 60, 5):
+            self.assertIsNone(self.tick(s, "linked", t, self.ZERO))
+        self.assertEqual(self.reads, [])
+
+
+class Sample(unittest.TestCase):
+    """Pins the two parec settings the bench taught us."""
+
+    def test_parec_call(self):
+        seen = {}
+
+        def fake_run(argv, **kw):
+            seen["argv"], seen["env"] = argv, kw.get("env", {})
+            return subprocess.CompletedProcess(argv, 0, stdout=b"\x00\x00", stderr=b"")
+
+        real = mw.subprocess.run
+        mw.subprocess.run = fake_run
+        try:
+            self.assertEqual(mw.sample("dji"), b"\x00\x00")
+        finally:
+            mw.subprocess.run = real
+        self.assertIn("--latency-msec=50", seen["argv"])  # else a 1 s run reads nothing
+        self.assertEqual(seen["argv"][seen["argv"].index("parec") + 1:][:2], ["-d", "dji"])
+        self.assertIn("node.dont-fallback=true", seen["env"]["PULSE_PROP"])  # else it records another mic
+        self.assertEqual(seen["argv"][:3], ["timeout", "-k", "1"])
+
+    def test_parec_missing_reads_nothing(self):
+        def boom(argv, **kw):
+            raise FileNotFoundError("timeout")
+
+        real = mw.subprocess.run
+        mw.subprocess.run = boom
+        try:
+            self.assertEqual(mw.sample("dji"), b"")
+        finally:
+            mw.subprocess.run = real
+
+
+class IsSilent(unittest.TestCase):
+    def s16(self, *xs):
+        import struct
+        return struct.pack(f"<{len(xs)}h", *xs)
+
+    def test_all_zero_is_silent(self):
+        self.assertTrue(mw.is_silent(self.s16(0, 0, 0, 0)))
+
+    def test_a_quiet_noise_floor_is_not_silent(self):
+        # 228, the bench's room noise with nobody talking; one non-zero sample is enough
+        self.assertFalse(mw.is_silent(self.s16(0, 228, 0, 0)))
+        self.assertFalse(mw.is_silent(self.s16(0, 0, -1, 0)))
+
+    def test_nothing_read_is_no_answer(self):
+        self.assertIsNone(mw.is_silent(b""))
+        self.assertIsNone(mw.is_silent(b"\x00"))  # less than one sample
+
+    def test_a_trailing_partial_sample_is_ignored(self):
+        self.assertTrue(mw.is_silent(self.s16(0, 0) + b"\x01"))
 
 
 if __name__ == "__main__":
