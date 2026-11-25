@@ -57,6 +57,15 @@ CI runs the same three on every pull request.
 
 `pixy-track`'s HID report layout comes from what the PixyPilot and omarchy-emeet-pixy projects worked out about the PIXY, checked against this camera.
 
+## Support
+
+If it's earned a spot on your bench and you'd like to throw a coffee my way:
+
+- [Ko-fi](https://ko-fi.com/IamMrCupp)
+- [Buy Me a Coffee](https://buymeacoffee.com/IamMrCupp)
+
+No pressure — it stays open source either way.
+
 ## License
 
 [AGPL-3.0-or-later](LICENSE), same as the rest of the bench tools. Contributions: see [CONTRIBUTING](CONTRIBUTING.md).
