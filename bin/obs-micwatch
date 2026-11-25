@@ -117,28 +117,51 @@ def usb_state(root=USB_DEVICES, usb_id=USB_ID):
 class Silence:
     """Tracks runs of pure digital silence on the linked source. Log lines come back from update()."""
 
-    def __init__(self, limit):
-        self.limit, self.since, self.warned = limit, None, False
+    UNREADABLE_AFTER = 3  # failed reads in a row before saying the check can't see the mic
+
+    def __init__(self, limit, every=SILENCE_EVERY):
+        self.limit, self.every = limit, every
+        self.since, self.warned, self.failed, self.last_sample = None, False, 0, None
 
     def update(self, silent, now):
         """silent: True for all-zero samples, False for any signal, None for no reading."""
         if silent is None:
+            self.since = None  # a gap we can't see into breaks the run
+            self.failed += 1
+            if self.failed == self.UNREADABLE_AFTER:
+                return "can't read the mic's source to check it for silence"
             return None
+        msg = None
+        if self.failed >= self.UNREADABLE_AFTER:
+            msg = "reading the mic's source again"
+        self.failed = 0
         if not silent:
-            back = self.warned
+            if self.warned:
+                msg = "signal back on the mic"
             self.since, self.warned = None, False
-            return "signal back on the mic" if back else None
+            return msg
         if self.since is None:
             self.since = now
-        if not self.warned and self.limit > 0 and now - self.since >= self.limit:
+        if not self.warned and now - self.since >= self.limit:
             self.warned = True
-            return (f"mic has sent pure silence for {now - self.since:.0f}s while linked"
+            return (f"mic has sent pure silence for at least {now - self.since:.0f}s while linked"
                     " (transmitter link down, or transmitter muted?)")
-        return None
+        return msg
 
     def reset(self):
-        """The source went away or got relinked: forget the run, say nothing."""
-        self.since, self.warned = None, False
+        """The source went away, got relinked, or OBS/PipeWire dropped: forget the run, say nothing."""
+        self.since, self.warned, self.failed, self.last_sample = None, False, 0, None
+
+    async def tick(self, reason, device, now, read):
+        """One poll's worth: sample the linked source every `every` seconds. Returns a log line or None."""
+        if reason != "linked":
+            self.reset()
+            return None
+        if self.limit <= 0 or (self.last_sample is not None and now - self.last_sample < self.every):
+            return None
+        self.last_sample = now
+        data = await asyncio.to_thread(read, device)
+        return self.update(is_silent(data), now)  # the run counts from when this sample started
 
 
 def is_silent(data):
@@ -146,7 +169,7 @@ def is_silent(data):
     n = len(data) // 2
     if n == 0:
         return None
-    return data[:n * 2].count(0) == n * 2
+    return not any(data[:n * 2])
 
 
 def sample(source, seconds=1):
@@ -157,7 +180,7 @@ def sample(source, seconds=1):
     noise would read as "signal back".
     """
     try:
-        return subprocess.run(["timeout", str(seconds), "parec", "-d", source, "--raw",
+        return subprocess.run(["timeout", "-k", "1", str(seconds), "parec", "-d", source, "--raw",
                                "--format=s16le", "--channels=2", "--rate=48000",
                                "--latency-msec=50",  # without it parec buffers ~2 s and a 1 s run reads nothing
                                "--client-name=obs-micwatch"],
@@ -220,7 +243,7 @@ class Obs:
 
 async def run():
     obs, last_fix, last_reason = Obs(), 0.0, None
-    silence, last_sample = Silence(SILENCE), 0.0
+    silence = Silence(SILENCE)
     while True:
         try:
             if obs.ws is None:
@@ -233,14 +256,9 @@ async def run():
             if reason != last_reason:
                 log(reason)
                 last_reason = reason
-            if reason != "linked":
-                silence.reset()
-            elif SILENCE > 0 and time.monotonic() - last_sample >= SILENCE_EVERY:
-                last_sample = time.monotonic()
-                data = await asyncio.to_thread(sample, dev)
-                msg = silence.update(is_silent(data), time.monotonic())
-                if msg:
-                    log(msg)
+            msg = await silence.tick(reason, dev, time.monotonic(), sample)
+            if msg:
+                log(msg)
             if action == "reconnect" and time.monotonic() - last_fix >= COOLDOWN:
                 log(f"reconnecting {INPUT!r} to {dev}")
                 await obs.set_device(PLACEHOLDER)
@@ -249,6 +267,7 @@ async def run():
                 last_fix = time.monotonic()
                 last_reason = None
         except RequestFailed as e:  # e.g. the input was renamed or deleted
+            silence.reset()
             if str(e) != last_reason:
                 log(str(e))
                 last_reason = str(e)
@@ -260,6 +279,7 @@ async def run():
                 except Exception:
                     pass
             obs.ws, last_reason = None, None
+            silence.reset()
         await asyncio.sleep(INTERVAL)
 
 
