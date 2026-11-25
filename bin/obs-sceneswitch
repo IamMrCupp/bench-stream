@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""obs-sceneswitch: switch OBS to the scope scene when the scope arm is over the work.
+"""obs-sceneswitch: switch OBS scenes off the scope arm and off which window has focus.
 
 It watches one OBS source (the overhead camera) through obs-websocket and
 measures how much of the blue work mat is covered by something white, which is
@@ -10,7 +10,17 @@ under it, do not matter. It switches scene when the arm has clearly moved:
   arm parked     and the scope scene is live     -> overhead scene
 
 It acts only on a change of arm position, so switching scenes by hand is never
-fought. It does nothing until both positions have been calibrated.
+fought. The arm does nothing until both positions have been calibrated.
+
+It also follows window focus, reported by the KWin script in kde/kwin over
+D-Bus (OBS can't see native Wayland windows itself):
+
+  an app in SCENESWITCH_APPS gets focus   -> that app's scene
+  the HUD gets focus                      -> scope scene with the arm in, else overhead
+  any other window gets focus             -> nothing
+
+Focus acts only when it moves to a different app, so a scene picked by hand
+stays until the next change. Neither trigger has a timer.
 
   obs-sceneswitch calibrate in        # arm over the work: save a reference
   obs-sceneswitch calibrate parked    # arm parked: save a reference
@@ -27,11 +37,16 @@ Settings (environment):
   SCENESWITCH_MAT        where the mat is in the picture, as left,top,right,bottom
                          fractions of the frame       (default 0.04,0.03,0.625,0.62)
   SCENESWITCH_DIR        where references live        (default ~/.local/share/scene-switch)
+  SCENESWITCH_APPS       window class=scene, comma-separated; matched against KWin's
+                         resourceClass or desktopFileName, any case
+                         (default org.sigrok.pulseview=Logic Analyzer,
+                          openboardview=Board View,burnwright=Chip Programmer)
+  SCENESWITCH_HUD        window class that means "back to the cameras" (default benchhud)
   SCENESWITCH_CONF       obs-websocket config file    (default: OBS's own)
 
 Reads the port and password from OBS's own config; never prints the password.
 """
-import asyncio, base64, hashlib, io, json, os, sys, time
+import asyncio, base64, hashlib, io, json, os, sys, threading, time
 
 import websockets
 from PIL import Image
@@ -50,6 +65,11 @@ RETRY = float(E("SCENESWITCH_RETRY", "5"))
 STALE = int(E("SCENESWITCH_STALE", "30"))  # identical looks in a row before the picture counts as frozen
 SIZE = (64, 36)  # what a frame is reduced to before comparing
 POSITIONS = ("in", "parked")
+APPS = E("SCENESWITCH_APPS", "org.sigrok.pulseview=Logic Analyzer,openboardview=Board View,burnwright=Chip Programmer")
+HUD = E("SCENESWITCH_HUD", "benchhud")
+BUS_NAME = "io.github.iammrcupp.SceneSwitch"  # what the KWin script calls; kde/kwin has the same names
+BUS_PATH = "/SceneSwitch"
+FOCUS_TIMEOUT = 5.0  # seconds a focus switch may take before it's given up, so a hung OBS can't hold the arm
 
 
 def log(*words):
@@ -145,6 +165,45 @@ class Decider:
             first = self.position is None
             self.position, self.candidate, self.count = seen, None, 0
             return None if first else seen  # the first sure look sets the baseline; it is not a change
+        return None
+
+
+def parse_apps(spec):
+    """'class=Scene,class=Scene' -> {class (lower case): Scene}."""
+    apps = {}
+    for item in spec.split(","):
+        cls, sep, scene = item.partition("=")
+        if sep and cls.strip() and scene.strip():
+            apps[cls.strip().lower()] = scene.strip()
+    return apps
+
+
+HUD_TARGET = object()  # what Focus.feed returns for the HUD: "whichever camera the arm says"
+
+
+class Focus:
+    """Turns window activations into at most one target per change of app.
+
+    feed() returns a scene name, HUD_TARGET for the HUD, or None for 'leave it'."""
+
+    def __init__(self, apps=None, hud=HUD):
+        self.apps = parse_apps(APPS) if apps is None else apps
+        self.hud = hud.lower()
+        self.last = None  # the app that had focus last time
+
+    def feed(self, resource_class, desktop_file=""):
+        names = [n.lower() for n in (resource_class, desktop_file) if n]
+        if not names:
+            return None
+        app = names[0]
+        if app == self.last:
+            return None  # another window of the same app: not a change of focus
+        self.last = app
+        for n in names:
+            if n in self.apps:
+                return self.apps[n]
+        if self.hud in names:
+            return HUD_TARGET
         return None
 
 
@@ -254,7 +313,20 @@ async def cmd_status():
         await obs.ws.close()
 
 
-async def watch(obs, lim, decider):
+class State:
+    """What the arm watcher and the focus follower share: the arm's last sure position,
+    and a lock so one doesn't switch in between the other reading the scene and setting it."""
+
+    def __init__(self):
+        self.decider = Decider()
+        self.arm = None  # last sure position; unlike the decider's, kept across OBS reconnects
+        self.lock = asyncio.Lock()
+
+    def camera(self):
+        return SCOPE if self.arm == "in" else OVERHEAD
+
+
+async def watch(obs, lim, state):
     last, same = None, 0
     while True:
         img = await obs.look()
@@ -265,22 +337,23 @@ async def watch(obs, lim, decider):
             if same == STALE:
                 log(f"the picture from '{SOURCE}' has not changed for {STALE} looks; holding off until it moves")
             seen = None if same >= STALE else classify(*measure(img), lim)
-            change = decider.feed(seen)
+            change = state.decider.feed(seen)
+            state.arm = state.decider.position or state.arm
             if change:
-                scene = await obs.scene()
-                want = SCOPE if change == "in" else OVERHEAD
-                other = OVERHEAD if change == "in" else SCOPE
-                if scene == other:
-                    ok = await obs.set_scene(want)
-                    log(f"arm {change}: {scene} -> {want}" + ("" if ok else " FAILED"))
-                else:
-                    log(f"arm {change}: scene is '{scene}', leaving it alone")
+                async with state.lock:
+                    scene = await obs.scene()
+                    want = SCOPE if change == "in" else OVERHEAD
+                    other = OVERHEAD if change == "in" else SCOPE
+                    if scene == other:
+                        ok = await obs.set_scene(want)
+                        log(f"arm {change}: {scene} -> {want}" + ("" if ok else " FAILED"))
+                    else:
+                        log(f"arm {change}: scene is '{scene}', leaving it alone")
         await asyncio.sleep(INTERVAL)
 
 
-async def cmd_run():
+async def watch_arm(state):
     quiet = False
-    decider = Decider()
     while True:
         marks = load_marks()
         lim = limits(marks)
@@ -294,13 +367,82 @@ async def cmd_run():
             obs = await connect()
             log(f"watching '{SOURCE}': in at {lim[0]:.0%} white over the mat or more, parked at {lim[1]:.0%} or less")
             quiet = False
-            await watch(obs, lim, decider)
+            await watch(obs, lim, state)
         except (OSError, websockets.WebSocketException, ConnectionError, KeyError, ValueError) as e:
             if not quiet:
                 log(f"OBS is not reachable ({type(e).__name__}); retrying every {RETRY:g}s")
             quiet = True
-            decider = Decider()  # after a gap, take a fresh baseline instead of acting on old news
+            state.decider = Decider()  # after a gap, take a fresh baseline instead of acting on old news
         await asyncio.sleep(RETRY)
+
+
+async def follow_focus(events, state):
+    """Switch scene for each change of focus that means something. A short connection per
+    switch, so this works whether or not the arm watcher is connected or calibrated."""
+    focus = Focus()
+    while True:
+        resource_class, desktop_file = await events.get()
+        target = focus.feed(resource_class, desktop_file)
+        if target is None:
+            continue
+        who = resource_class or desktop_file
+        async with state.lock:
+            want = state.camera() if target is HUD_TARGET else target
+            try:
+                await asyncio.wait_for(switch_to(want, who), FOCUS_TIMEOUT)
+            except (OSError, websockets.WebSocketException, ConnectionError, KeyError, ValueError,
+                    asyncio.TimeoutError) as e:
+                log(f"focus {who}: OBS is not reachable ({type(e).__name__})")
+
+
+async def switch_to(want, who):
+    obs = await connect()
+    try:
+        scene = await obs.scene()
+        if scene != want:
+            ok = await obs.set_scene(want)
+            log(f"focus {who}: {scene} -> {want}" + ("" if ok else " FAILED (is there a scene by that name?)"))
+    finally:
+        await obs.ws.close()
+
+
+def listen_for_focus(report):
+    """Own BUS_NAME on the session bus and hand each Focus(resourceClass, desktopFileName)
+    call from the KWin script to report(). Runs its own GLib loop on a thread."""
+    try:
+        import dbus, dbus.service
+        from dbus.mainloop.glib import DBusGMainLoop
+        from gi.repository import GLib
+    except ImportError as e:
+        log(f"not following window focus: {e.name} is missing (python3-dbus, python3-gi)")
+        return
+
+    def serve():
+        try:
+            DBusGMainLoop(set_as_default=True)
+            bus = dbus.SessionBus()
+            name = dbus.service.BusName(BUS_NAME, bus, do_not_queue=True)  # noqa: F841 - held while the loop runs
+
+            class Service(dbus.service.Object):
+                @dbus.service.method(BUS_NAME, in_signature="ss", out_signature="")
+                def Focus(self, resource_class, desktop_file):
+                    report((str(resource_class), str(desktop_file)))
+
+            Service(bus, BUS_PATH)
+            log(f"following window focus on D-Bus as {BUS_NAME}")
+            GLib.MainLoop().run()
+        except Exception as e:  # noqa: BLE001 - no session bus, name taken: the arm still works
+            log(f"not following window focus: {type(e).__name__}: {e}")
+
+    threading.Thread(target=serve, name="focus", daemon=True).start()
+
+
+async def cmd_run(listen=listen_for_focus):
+    loop = asyncio.get_running_loop()
+    events = asyncio.Queue()
+    state = State()
+    listen(lambda event: loop.call_soon_threadsafe(events.put_nowait, event))
+    await asyncio.gather(watch_arm(state), follow_focus(events, state))
 
 
 def main(argv):

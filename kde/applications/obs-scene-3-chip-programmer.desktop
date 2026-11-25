@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=OBS scene: Chip Programmer
+Comment=Switch OBS's program scene to Chip Programmer (Meta+3)
+Exec=obsctl SetCurrentProgramScene "{\\"sceneName\\": \\"Chip Programmer\\"}"
+Icon=com.obsproject.Studio
+NoDisplay=true
+StartupNotify=false
+X-KDE-Shortcuts=Meta+3

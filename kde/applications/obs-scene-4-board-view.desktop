@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=OBS scene: Board View
+Comment=Switch OBS's program scene to Board View (Meta+4)
+Exec=obsctl SetCurrentProgramScene "{\\"sceneName\\": \\"Board View\\"}"
+Icon=com.obsproject.Studio
+NoDisplay=true
+StartupNotify=false
+X-KDE-Shortcuts=Meta+4

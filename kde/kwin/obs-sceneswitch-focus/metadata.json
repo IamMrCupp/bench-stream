@@ -1,0 +1,13 @@
+{
+    "KPackageStructure": "KWin/Script",
+    "KPlugin": {
+        "Id": "obs-sceneswitch-focus",
+        "Name": "obs-sceneswitch focus",
+        "Description": "Tell obs-sceneswitch which app has focus, so OBS can follow it",
+        "Version": "1",
+        "License": "AGPL-3.0-or-later",
+        "EnabledByDefault": false
+    },
+    "X-Plasma-API": "javascript",
+    "X-Plasma-MainScript": "code/main.js"
+}
