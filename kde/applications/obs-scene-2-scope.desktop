@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=OBS scene: Scope Camera
+Comment=Switch OBS's program scene to Scope Camera (Meta+2)
+Exec=obsctl SetCurrentProgramScene "{\\"sceneName\\": \\"Scope Camera\\"}"
+Icon=com.obsproject.Studio
+NoDisplay=true
+X-KDE-Shortcuts=Meta+2

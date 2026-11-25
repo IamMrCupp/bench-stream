@@ -3,15 +3,18 @@
 
 The fake serves a made-up overhead picture with a bright "scope head" drawn either
 over the work or parked at the top left, plus some noise so no two frames match
-exactly. It never touches the real OBS.
+exactly. Window focus is fed in the way the D-Bus listener would hand it over.
+It never touches the real OBS or the session bus.
 """
-import asyncio, base64, importlib.machinery, importlib.util, inspect, io, json, os, random, shutil, sys, tempfile
+import asyncio, base64, configparser, importlib.machinery, importlib.util, inspect, io, json, os, random, re, shlex, shutil, sys, tempfile
 
 import websockets
 from PIL import Image, ImageDraw
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "bin", "obs-sceneswitch")
+KDE = os.path.join(HERE, "..", "kde")
+SCENES = {"Overhead Camera", "Scope Camera", "Chip Programmer", "Board View", "Logic Analyzer", "Some Other Scene"}
 
 
 def picture(position, seed=0, hand=False, spot=(45, 40), under=None):
@@ -55,6 +58,15 @@ class FakeObs:
         self.switches = []
         self.looks = 0
         self.clients = set()
+        self.scenes = set(SCENES)  # SetCurrentProgramScene to anything else fails, as OBS does
+        self.report = None  # what the service gave its focus listener
+
+    def focus(self, resource_class, desktop_file=""):
+        """A window gets focus, as the KWin script reports it."""
+        self.report((resource_class, desktop_file))
+
+    def listen(self, report):
+        self.report = report
 
     async def handler(self, ws):
         await ws.send(json.dumps({"op": 0, "d": {"rpcVersion": 1}}))
@@ -73,8 +85,11 @@ class FakeObs:
                 elif kind == "GetCurrentProgramScene":
                     resp = {"currentProgramSceneName": self.scene}
                 elif kind == "SetCurrentProgramScene":
-                    self.scene = data["sceneName"]
-                    self.switches.append(self.scene)
+                    if data["sceneName"] in self.scenes:
+                        self.scene = data["sceneName"]
+                        self.switches.append(self.scene)
+                    else:
+                        ok = False
                 else:
                     ok = False
                 await ws.send(json.dumps({"op": 7, "d": {"requestType": kind, "requestId": d["requestId"],
@@ -85,6 +100,8 @@ class FakeObs:
 
 
 def load(conf, data_dir, **env):
+    for k in [k for k in os.environ if k.startswith("SCENESWITCH_")]:
+        del os.environ[k]  # nothing carried over from the test before
     os.environ.update(SCENESWITCH_CONF=conf, SCENESWITCH_DIR=data_dir, SCENESWITCH_INTERVAL="0.02",
                       SCENESWITCH_RETRY="0.05", SCENESWITCH_HOLD="3", SCENESWITCH_STALE="1000",
                       SCENESWITCH_MAT="0.04,0.03,0.625,0.95")
@@ -118,7 +135,7 @@ async def harness(fake, body, calibrate=("in", "parked"), **env):
             fake.position = shown
             assert await mod.cmd_calibrate(label) == 0
         fake.position = start_pos
-        task = asyncio.create_task(mod.cmd_run())
+        task = asyncio.create_task(mod.cmd_run(listen=fake.listen))
         try:
             await body(fake, mod)
         finally:
@@ -252,6 +269,169 @@ def test_decider_unit():
     assert [d.feed(x) for x in ["parked"] * 3] == [None, None, None]  # baseline, not a change
     assert [d.feed(x) for x in ["in", "in", None, "in", "in", "in"]] == [None, None, None, None, None, "in"]
     assert [d.feed(x) for x in ["in", "parked", "parked", "parked"]] == [None, None, None, "parked"]
+
+
+# ---------- window focus ----------
+async def test_focusing_an_app_switches_to_its_scene():
+    async def body(fake, mod):
+        await settle(fake)
+        fake.focus("org.sigrok.pulseview", "org.sigrok.PulseView")
+        await until(lambda: fake.switches == ["Logic Analyzer"])
+        fake.focus("openboardview")
+        await until(lambda: fake.switches == ["Logic Analyzer", "Board View"])
+        fake.focus("Burnwright", "burnwright")
+        await until(lambda: fake.switches == ["Logic Analyzer", "Board View", "Chip Programmer"])
+    await harness(FakeObs("parked", "Overhead Camera"), body)
+
+
+async def test_focusing_the_hud_goes_back_to_the_camera_the_arm_says():
+    async def body(fake, mod):
+        await settle(fake)
+        fake.focus("openboardview")
+        await until(lambda: fake.scene == "Board View")
+        fake.focus("benchhud")
+        await until(lambda: fake.scene == "Overhead Camera")
+        fake.focus("openboardview")
+        await until(lambda: fake.scene == "Board View")
+        fake.position = "in"  # the arm swings in while an app scene is live: the arm leaves it alone
+        await settle(fake, 15)
+        assert fake.scene == "Board View", fake.switches
+        fake.focus("benchhud")
+        await until(lambda: fake.scene == "Scope Camera")
+        assert fake.switches == ["Board View", "Overhead Camera", "Board View", "Scope Camera"], fake.switches
+    await harness(FakeObs("parked", "Overhead Camera"), body)
+
+
+async def test_other_windows_change_nothing():
+    async def body(fake, mod):
+        await settle(fake)
+        for cls in ("google-chrome", "org.kde.konsole", "obs", "Claude", "", "systemsettings"):
+            fake.focus(cls)
+        fake.focus("openboardview")  # handled in order: once this lands, the ones before did nothing
+        await until(lambda: fake.switches == ["Board View"])
+    await harness(FakeObs("parked", "Overhead Camera"), body)
+
+
+async def test_a_scene_picked_by_hand_stays_until_focus_moves_to_another_app():
+    async def body(fake, mod):
+        await settle(fake)
+        fake.focus("Burnwright", "burnwright")
+        await until(lambda: fake.switches == ["Chip Programmer"])
+        fake.scene = "Some Other Scene"  # picked by hand, Burnwright still focused
+        fake.focus("Burnwright", "burnwright")  # one of its dialogs, or it again: same app
+        fake.focus("burnwright", "")
+        await asyncio.sleep(0.2)
+        assert fake.scene == "Some Other Scene", fake.switches
+        fake.focus("google-chrome")  # away and back is a change
+        fake.focus("Burnwright", "burnwright")
+        await until(lambda: fake.switches == ["Chip Programmer", "Chip Programmer"])
+    await harness(FakeObs("parked", "Overhead Camera"), body)
+
+
+async def test_focus_does_not_fight_the_arm():
+    async def body(fake, mod):
+        await settle(fake)
+        fake.position = "in"
+        await until(lambda: fake.switches == ["Scope Camera"])
+        fake.focus("org.sigrok.pulseview")
+        await until(lambda: fake.scene == "Logic Analyzer")
+        fake.position = "parked"  # arm parked while the analyzer is up: nothing
+        await settle(fake, 15)
+        assert fake.scene == "Logic Analyzer", fake.switches
+        fake.focus("benchhud")
+        await until(lambda: fake.scene == "Overhead Camera")
+        await settle(fake, 15)
+        assert fake.switches == ["Scope Camera", "Logic Analyzer", "Overhead Camera"], fake.switches
+    await harness(FakeObs("parked", "Overhead Camera"), body)
+
+
+async def test_focus_works_before_the_arm_is_calibrated():
+    async def body(fake, mod):
+        await asyncio.sleep(0.2)
+        fake.focus("openboardview")
+        await until(lambda: fake.switches == ["Board View"])
+        fake.focus("benchhud")  # the arm's position isn't known: overhead
+        await until(lambda: fake.switches == ["Board View", "Overhead Camera"])
+        assert fake.looks == 0
+    await harness(FakeObs("in", "Scope Camera"), body, calibrate=())
+
+
+async def test_a_missing_scene_is_survived():
+    async def body(fake, mod):
+        await settle(fake)
+        fake.scenes.discard("Board View")
+        fake.focus("openboardview")  # fails in OBS; the next one must still work
+        fake.focus("org.sigrok.pulseview")
+        await until(lambda: fake.switches == ["Logic Analyzer"])
+    await harness(FakeObs("parked", "Overhead Camera"), body)
+
+
+async def test_the_app_list_comes_from_the_environment():
+    async def body(fake, mod):
+        await settle(fake)
+        fake.focus("org.sigrok.pulseview")  # not in this list
+        fake.focus("Kicad", "org.kde.kicad")
+        await until(lambda: fake.switches == ["Some Other Scene"])
+        fake.focus("benchhud")  # not the HUD here
+        fake.focus("myhud")
+        await until(lambda: fake.switches == ["Some Other Scene", "Overhead Camera"])
+    await harness(FakeObs("parked", "Overhead Camera"), body,
+                  SCENESWITCH_APPS="kicad=Some Other Scene", SCENESWITCH_HUD="MyHUD")
+
+
+def test_focus_unit():
+    mod = load("/nonexistent", tempfile.mkdtemp())
+    assert mod.parse_apps(" a = One ,b=Two Words,broken,=x,c=") == {"a": "One", "b": "Two Words"}
+    f = mod.Focus({"burnwright": "Chip Programmer"}, "benchhud")
+    assert f.feed("", "") is None
+    assert f.feed("Burnwright", "") == "Chip Programmer"
+    assert f.feed("burnwright", "burnwright") is None  # same app
+    assert f.feed("x-weird", "burnwright") == "Chip Programmer"  # matched on desktopFileName
+    assert f.feed("BenchHUD") is mod.HUD_TARGET
+    assert f.feed("benchhud") is None
+    assert f.feed("konsole") is None and f.last == "konsole"
+
+
+def test_the_default_apps_never_include_the_manual_only_scenes():
+    mod = load("/nonexistent", tempfile.mkdtemp())
+    scenes = set(mod.parse_apps(mod.APPS).values())
+    assert scenes == {"Logic Analyzer", "Board View", "Chip Programmer"}, scenes
+
+
+def test_the_kwin_script_calls_the_name_the_service_owns():
+    mod = load("/nonexistent", tempfile.mkdtemp())
+    js = open(os.path.join(KDE, "kwin", "obs-sceneswitch-focus", "contents", "code", "main.js")).read()
+    call = re.search(r'callDBus\("([^"]+)", "([^"]+)", "([^"]+)",\s*"(\w+)"', js)
+    assert call and call.groups() == (mod.BUS_NAME, mod.BUS_PATH, mod.BUS_NAME, "Focus"), call
+    assert "workspace.windowActivated.connect" in js
+    meta = json.load(open(os.path.join(KDE, "kwin", "obs-sceneswitch-focus", "metadata.json")))
+    assert meta["KPlugin"]["Id"] == "obs-sceneswitch-focus" and meta["X-Plasma-API"] == "javascript"
+
+
+def desktop_exec(value):
+    """Exec= as the launcher runs it: string-unescape the value, then split it the way the
+    Desktop Entry spec quotes arguments (which, for what's used here, is shell double quoting)."""
+    value = re.sub(r"\\(.)", lambda m: {"s": " ", "n": "\n", "t": "\t", "r": "\r"}.get(m.group(1), m.group(1)), value)
+    return shlex.split(value)
+
+
+def test_the_scene_shortcuts():
+    want = {1: "Overhead Camera", 2: "Scope Camera", 3: "Chip Programmer", 4: "Board View",
+            5: "Logic Analyzer", 6: "Terminal", 7: "Browser"}
+    got = {}
+    folder = os.path.join(KDE, "applications")
+    for name in sorted(os.listdir(folder)):
+        cp = configparser.ConfigParser(interpolation=None)
+        cp.optionxform = str
+        cp.read(os.path.join(folder, name))
+        e = cp["Desktop Entry"]
+        key = re.fullmatch(r"Meta\+(\d)", e["X-KDE-Shortcuts"])
+        assert key, (name, e["X-KDE-Shortcuts"])
+        argv = desktop_exec(e["Exec"])
+        assert argv[:2] == ["obsctl", "SetCurrentProgramScene"] and len(argv) == 3, argv
+        got[int(key.group(1))] = json.loads(argv[2])["sceneName"]
+        assert e["NoDisplay"] == "true" and e["Type"] == "Application"
+    assert got == want, got
 
 
 if __name__ == "__main__":

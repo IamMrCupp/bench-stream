@@ -11,7 +11,9 @@ None of it is big enough for a repo of its own, and all of it used to live only 
 | [`obsctl`](bin/obsctl) | Send one obs-websocket request to the OBS on this machine, or save a screenshot of a source. `obsctl GetStats`, `obsctl shot` | Command |
 | [`obs-golive`](bin/obs-golive) | When the main stream starts, wait a few seconds and start every Aitum Multistream output; when it stops, stop them. Never starts the main stream itself | `obs-golive.service` |
 | [`obs-micwatch`](bin/obs-micwatch) | When the DJI Mic receiver drops off USB and comes back, PipeWire gives it a new source and OBS stays attached to nothing. This notices and re-applies the input's device | `obs-micwatch.service` |
-| [`obs-sceneswitch`](bin/obs-sceneswitch) | Watches the overhead camera and switches to the scope scene when the scope arm swings over the work, back when it's parked. Needs calibrating first — `obs-sceneswitch calibrate in` / `parked` | `obs-sceneswitch.service` |
+| [`obs-sceneswitch`](bin/obs-sceneswitch) | Watches the overhead camera and switches to the scope scene when the scope arm swings over the work, back when it's parked. Also follows window focus: PulseView, OpenBoardView and Burnwright each get their scene, the HUD goes back to the cameras. The arm needs calibrating first — `obs-sceneswitch calibrate in` / `parked` | `obs-sceneswitch.service` |
+| [`kde/kwin`](kde/kwin) | A KWin script that tells `obs-sceneswitch` which app just got focus. OBS runs under XWayland and can't see native Wayland windows; KWin can | KWin script |
+| [`kde/applications`](kde/applications) | Meta+1 to Meta+7 pick a scene by hand: Overhead, Scope, Chip Programmer, Board View, Logic Analyzer, Terminal, Browser | KDE global shortcuts |
 | [`pixy-tune`](bin/pixy-tune) | Manual exposure and white balance for the EMEET PIXY, which forgets both on replug | udev, on plug-in |
 | [`pixy-track`](bin/pixy-track) | The PIXY's AI tracking on, off or status, over its vendor HID interface | udev, on plug-in |
 | [`multichat.service`](systemd/user/multichat.service) | Runs the merged Twitch + YouTube chat overlay from [IamMrCupp/megarohas_multichat](https://github.com/IamMrCupp/megarohas_multichat), checked out at `~/.local/share/multichat`. The code lives in that fork, not here | User service |
@@ -26,7 +28,7 @@ The settings each one takes (input names, scene names, delays) are at the top of
 On the bench (Ubuntu, OBS with obs-websocket on):
 
 ```sh
-sudo apt install python3-websockets python3-pil pulseaudio-utils v4l-utils
+sudo apt install python3-websockets python3-pil python3-dbus python3-gi pulseaudio-utils v4l-utils
 git clone https://github.com/IamMrCupp/bench-stream ~/Code/bench-stream
 cd ~/Code/bench-stream
 
@@ -37,6 +39,44 @@ systemctl --user enable --now obs-golive obs-micwatch obs-sceneswitch
 ```
 
 `install.sh` copies and reloads — it never starts or restarts a service, so a change goes live when you restart it, not when you pull. The multichat unit also needs the fork checked out at `~/.local/share/multichat` and Node.
+
+### Scene switching off focus, and the scene shortcuts
+
+The KWin script installs disabled. Turn it on once:
+
+```sh
+kwriteconfig6 --file kwinrc --group Plugins --key obs-sceneswitch-focusEnabled true
+qdbus6 org.kde.KWin /KWin reconfigure
+```
+
+After an update to the script, turn it off and on again the same way (`false`, reconfigure, `true`, reconfigure) so KWin loads the new one.
+
+| Window gets focus | Scene |
+|---|---|
+| PulseView | Logic Analyzer |
+| OpenBoardView | Board View |
+| Burnwright | Chip Programmer |
+| The HUD | Scope Camera with the arm in, Overhead Camera otherwise |
+| Anything else | No change |
+
+It switches only when focus moves to a different app, so a scene picked by hand stays until you click into another one. There's no idle timer. The arm still switches only between Overhead and Scope, so it never pulls you off an app scene. Change the list with `SCENESWITCH_APPS` and `SCENESWITCH_HUD` in the unit (see the top of the script).
+
+Terminal and Browser are shortcut-only on purpose: what's on those screens is never put on stream by clicking into a window.
+
+The shortcuts register when `install.sh` rebuilds KDE's app list. Plasma ships Meta+1 to Meta+9 bound to the task manager's entries, and a shortcut whose key is taken registers with no key at all. Free 1 to 7 before the first `./install.sh`:
+
+```sh
+python3 - <<'PY'
+import dbus
+ka = dbus.Interface(dbus.SessionBus().get_object("org.kde.kglobalaccel", "/kglobalaccel"), "org.kde.KGlobalAccel")
+for n in range(1, 8):
+    ka.setForeignShortcutKeys(["plasmashell", f"activate task manager entry {n}", "plasmashell", ""], dbus.Array([], signature="(ai)"))
+PY
+```
+
+If you installed first, delete `~/.local/share/applications/obs-scene-*.desktop`, run `kbuildsycoca6`, then free the keys and run `./install.sh` again.
+
+A shortcut for a scene OBS doesn't have yet does nothing.
 
 `obs-sceneswitch`'s calibration pictures stay in `~/.local/share/scene-switch` on the bench. They're frames of the bench camera, so they don't belong in a public repo.
 
