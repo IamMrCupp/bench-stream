@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/IamMrCupp/bench-stream/compare/v0.2.1...v0.3.0) (2026-11-25)
+
+
+### Features
+
+* **micwatch:** log when the linked mic sends pure silence ([a467698](https://github.com/IamMrCupp/bench-stream/commit/a467698ebad3a7ba5e26c6c7984cb85a5ed2a5cc))
+
+
+### Bug Fixes
+
+* **micwatch:** reset the silence run on errors, log unreadable samples, test the wiring ([b0fc320](https://github.com/IamMrCupp/bench-stream/commit/b0fc3207d981a4888bbe5e3f6d9df1be2f64760c))
+
 ## [0.2.1](https://github.com/IamMrCupp/bench-stream/compare/v0.2.0...v0.2.1) (2026-11-25)
 
 
