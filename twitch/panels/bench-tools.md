@@ -16,7 +16,7 @@ What runs this stream and this bench. All open source.
 
 **[benchhud](https://github.com/IamMrCupp/benchhud)** — the HUD. Scope and thermal camera in one picture, so the part that's cooking glows. Plus live meters and the job card.
 
-**[multichat](https://github.com/IamMrCupp/megarohas_multichat)** — Twitch and YouTube chat in one overlay. My fork of [megarohas's](https://github.com/megarohas/megarohas_multichat) MIT project, plus a reply dock. duplexchat, its Go rewrite, is in progress.
+**[multichat](https://github.com/IamMrCupp/megarohas_multichat)** — Twitch and YouTube chat in one overlay, a reply dock, and saved title, category and tag presets for both. My fork of [megarohas's](https://github.com/megarohas/megarohas_multichat) MIT project; duplexchat is its Go rewrite.
 
 **[bench-stream](https://github.com/IamMrCupp/bench-stream)** — OBS helpers: scene switching, mic recovery, camera tuning.
 
@@ -37,7 +37,7 @@ From Twitch's help center, checked 2026-11-24:
 ## What's in it, and what isn't
 
 - **In:** the tools behind the stream and the bench, plus **bench-suite**, because the next question after "what's that?" is "can I run it?"
-- **Chat:** the bench runs **megarohas_multichat** (`multichat.service`), a fork of megarohas's MIT-licensed project with a reply dock added, so that's the one listed, with credit to the original. **duplexchat** is its Go rewrite and isn't in use yet, so it gets a mention, not a line of its own.
+- **Chat:** the bench runs **megarohas_multichat** (`multichat.service`), a fork of megarohas's MIT-licensed project with a reply dock and a stream info panel (`/info`: title, category and tags for both platforms, with saved presets) added, so that's the one listed, with credit to the original. **duplexchat** is its Go rewrite and isn't in use yet, so it gets a mention, not a line of its own.
 - **Out:** **homebrew-bench** — it's how bench-suite installs on a Mac, and bench-suite's README already links it. **bench-recon** — the pentest app bench-suite installs off by default; it's never on stream.
 
 ## Changing the image
