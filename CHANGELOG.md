@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/IamMrCupp/bench-stream/compare/v0.4.0...v0.4.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **udev:** remove the thermal no-storage rule, the experiment is over ([d406550](https://github.com/IamMrCupp/bench-stream/commit/d406550a107f00ffa09b02db160cc75ace986a5c))
+
 ## [0.4.0](https://github.com/IamMrCupp/bench-stream/compare/v0.3.2...v0.4.0) (2026-11-26)
 
 
