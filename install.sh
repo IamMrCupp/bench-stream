@@ -12,7 +12,7 @@
 set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-USER_SCRIPTS="obsctl obs-golive obs-micwatch obs-sceneswitch"
+USER_SCRIPTS="obsctl obs-golive obs-micwatch obs-sceneswitch mevo-relay"
 SYSTEM_SCRIPTS="pixy-tune pixy-track"
 BIN="$HOME/.local/bin"
 UNITS="$HOME/.config/systemd/user"

@@ -1,0 +1,19 @@
+[Unit]
+Description=Pass the Mevo's SRT feed on to OBS without its audio
+Documentation=file:%h/.local/bin/mevo-relay
+# The Mevo drops out and reboots; keep retrying however often that happens.
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=%h/.local/bin/mevo-relay
+Environment="MEVO_RELAY_SRC=srt://192.168.7.33:4201?timeout=5000000"
+Environment="MEVO_RELAY_DST=udp://127.0.0.1:4202?pkt_size=1316"
+# always, not on-failure: a feed that stalls mid-stream makes ffmpeg exit 0.
+Restart=always
+RestartSec=2
+# Back off to one try every 30 s while the Mevo is off, instead of every 2 s.
+RestartSteps=5
+RestartMaxDelaySec=30
+
+[Install]
+WantedBy=default.target

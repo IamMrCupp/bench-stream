@@ -1,0 +1,30 @@
+#!/bin/sh
+# mevo-relay: pass the Mevo's SRT feed on to OBS with the audio taken out.
+#
+# The Mevo always sends an audio track, even with every mic off in its app, and
+# that track's timing drifts. OBS buffers a muted source's audio all the same, so
+# the Mevo pushes OBS's audio buffering to its 960 ms maximum and keeps it there.
+# This keeps only the video, copied as-is (no re-encode), and sends it to a local
+# UDP port. OBS's "Mevo SRT" source reads that instead of the Mevo.
+#
+# It exits when the feed stops (the SRT/UDP timeout below), and the unit restarts
+# it, so a Mevo dropout or reboot sorts itself out. A feed that stalls mid-stream
+# ends with exit code 0, so the unit must use Restart=always, not on-failure.
+#
+# -analyzeduration keeps start-up short: with -fflags nobuffer, everything read
+# while ffmpeg works out the stream is dropped, and the default is 5 s.
+#
+# Settings (environment):
+#   MEVO_RELAY_SRC       where the Mevo is      (default srt://192.168.7.33:4201?timeout=5000000)
+#   MEVO_RELAY_DST       where OBS reads from   (default udp://127.0.0.1:4202?pkt_size=1316)
+#   MEVO_RELAY_LOGLEVEL  ffmpeg's -loglevel     (default warning)
+set -eu
+
+SRC=${MEVO_RELAY_SRC:-srt://192.168.7.33:4201?timeout=5000000}
+DST=${MEVO_RELAY_DST:-udp://127.0.0.1:4202?pkt_size=1316}
+
+exec ffmpeg -hide_banner -nostdin -loglevel "${MEVO_RELAY_LOGLEVEL:-warning}" \
+    -fflags nobuffer -analyzeduration 1000000 -i "$SRC" \
+    -map 0:v:0 -c copy \
+    -muxdelay 0 -muxpreload 0 -flush_packets 1 \
+    -f mpegts "$DST"
