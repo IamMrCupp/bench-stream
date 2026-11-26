@@ -18,7 +18,7 @@ None of it is big enough for a repo of its own, and all of it used to live only 
 | [`pixy-tune`](bin/pixy-tune) | Manual exposure and white balance for the EMEET PIXY, which forgets both on replug | udev, on plug-in |
 | [`pixy-track`](bin/pixy-track) | The PIXY's AI tracking on, off or status, over its vendor HID interface | udev, on plug-in |
 | [`multichat.service`](systemd/user/multichat.service) | Runs the merged Twitch + YouTube chat overlay from [IamMrCupp/megarohas_multichat](https://github.com/IamMrCupp/megarohas_multichat), checked out at `~/.local/share/multichat`. The code lives in that fork, not here | User service |
-| [`udev/`](udev) | Keep the PIXY awake, re-tune it on plug-in, and keep the host off the thermal camera's storage gadget | udev |
+| [`udev/`](udev) | Keep the PIXY awake and re-tune it on plug-in | udev |
 
 Every OBS helper reads the websocket port and password from OBS's own config. Nothing here stores or prints the password.
 
