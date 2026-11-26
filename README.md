@@ -46,10 +46,10 @@ systemctl --user enable --now obs-golive obs-micwatch obs-sceneswitch mevo-relay
 The Mevo takes one SRT connection at a time, so OBS has to stop calling it before the relay can. Point the "Mevo SRT" source at the relay; its name stays the same, so `obs-sceneswitch` keeps working:
 
 ```sh
-obsctl SetInputSettings '{"inputName":"Mevo SRT","inputSettings":{"input":"udp://127.0.0.1:4202?timeout=5000000"}}'
+obsctl SetInputSettings '{"inputName":"Mevo SRT","inputSettings":{"input":"udp://127.0.0.1:4202?timeout=15000000&overrun_nonfatal=1"}}'
 ```
 
-Then restart OBS once. OBS never lowers its audio buffering while it runs, so the second it already built up only goes away on a restart. The Mevo's address is in `mevo-relay.service`.
+Then restart OBS once. OBS never lowers its audio buffering while it runs, so the second it already built up only goes away on a restart. The Mevo's address is in `mevo-relay.service`. The 15 s timeout is longer than the gap while the relay restarts, so OBS keeps its connection through a relay restart. While the Mevo is off, the unit backs off to one try every 30 s.
 
 ### Scene switching off focus, and the scene shortcuts
 

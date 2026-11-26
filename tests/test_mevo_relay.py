@@ -24,13 +24,17 @@ def free_udp_port():
         return s.getsockname()[1]
 
 
-def source(url):
-    """A 20 s test stream with both a video and an audio track, like the Mevo's."""
+def source(url, seconds=20):
+    """A test stream with both a video and an audio track, like the Mevo's.
+
+    The video is MPEG-4 Part 2, which ffmpeg never picks by itself for MPEG-TS
+    (it would pick mpeg2video), so finding it on the far side proves a copy.
+    """
     return subprocess.Popen(
         ["ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error", "-re",
-         "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=20",
-         "-f", "lavfi", "-i", "sine=frequency=440:duration=20",
-         "-c:v", "mpeg2video", "-c:a", "mp2", "-f", "mpegts", url],
+         "-f", "lavfi", "-i", f"testsrc2=size=320x240:rate=25:duration={seconds}",
+         "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}",
+         "-c:v", "mpeg4", "-g", "25", "-c:a", "mp2", "-f", "mpegts", url],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
@@ -58,13 +62,14 @@ def stop(*procs):
 class Relay(unittest.TestCase):
     def check_video_only(self, src_url, relay_src):
         out_port = free_udp_port()
-        r = relay(relay_src, f"udp://127.0.0.1:{out_port}?pkt_size=1316")
-        s = source(src_url)
+        r = s = None
         try:
+            r = relay(relay_src, f"udp://127.0.0.1:{out_port}?pkt_size=1316")
+            s = source(src_url)
             streams = probe(f"udp://127.0.0.1:{out_port}?timeout=15000000")
         finally:
             stop(s, r)
-        self.assertEqual([(x["codec_type"], x["codec_name"]) for x in streams], [("video", "mpeg2video")])
+        self.assertEqual([(x["codec_type"], x["codec_name"]) for x in streams], [("video", "mpeg4")])
 
     def test_udp_feed_comes_out_video_only(self):
         port = free_udp_port()
@@ -76,14 +81,15 @@ class Relay(unittest.TestCase):
         port = free_udp_port()
         s_url = f"srt://127.0.0.1:{port}?mode=listener"
         out_port = free_udp_port()
-        s = source(s_url)
-        time.sleep(1)  # let the listener come up before the relay calls it
-        r = relay(f"srt://127.0.0.1:{port}?timeout=5000000", f"udp://127.0.0.1:{out_port}?pkt_size=1316")
+        r = s = None
         try:
+            s = source(s_url)
+            time.sleep(1)  # let the listener come up; an SRT caller retries for a few seconds anyway
+            r = relay(f"srt://127.0.0.1:{port}?timeout=5000000", f"udp://127.0.0.1:{out_port}?pkt_size=1316")
             streams = probe(f"udp://127.0.0.1:{out_port}?timeout=15000000")
         finally:
             stop(s, r)
-        self.assertEqual([(x["codec_type"], x["codec_name"]) for x in streams], [("video", "mpeg2video")])
+        self.assertEqual([(x["codec_type"], x["codec_name"]) for x in streams], [("video", "mpeg4")])
 
     def test_exits_when_nothing_arrives(self):
         # The unit restarts it on exit, so a dead feed must end the process, not hang it.
@@ -97,13 +103,28 @@ class Relay(unittest.TestCase):
         self.assertNotEqual(rc, 0)
 
 
+    def test_exits_when_the_feed_stops_midstream(self):
+        # The real dropout: frames flow, then stop. ffmpeg ends with exit code 0 here,
+        # which is why the unit uses Restart=always; only the exit itself is checked.
+        port = free_udp_port()
+        r = s = None
+        try:
+            r = relay(f"udp://127.0.0.1:{port}?timeout=2000000", f"udp://127.0.0.1:{free_udp_port()}")
+            s = source(f"udp://127.0.0.1:{port}?pkt_size=1316", seconds=6)
+            s.wait(timeout=20)
+            r.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.fail("mevo-relay kept running after the feed stopped")
+        finally:
+            stop(s, r)
+
+
 class Script(unittest.TestCase):
     def test_defaults_point_at_the_bench(self):
         with open(PATH) as f:
             text = f.read()
         self.assertIn("srt://192.168.7.33:4201?timeout=5000000", text)
         self.assertIn("udp://127.0.0.1:4202?pkt_size=1316", text)
-        self.assertIn("-map 0:v:0 -c copy", text)
 
 
 if __name__ == "__main__":
