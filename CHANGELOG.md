@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/IamMrCupp/bench-stream/compare/v0.3.2...v0.4.0) (2026-11-26)
+
+
+### Features
+
+* **mevo-relay:** strip the Mevo's audio before OBS sees it ([b66e5ef](https://github.com/IamMrCupp/bench-stream/commit/b66e5efc225f7602c200cb00637e98eac5b53fee))
+
+
+### Bug Fixes
+
+* **mevo-relay:** start in about 3 s, back off while the Mevo is off, test copy and mid-stream stalls ([f9f1e74](https://github.com/IamMrCupp/bench-stream/commit/f9f1e74f7ff6042c8905b274e85012e2590f0a6c))
+
 ## [0.3.2](https://github.com/IamMrCupp/bench-stream/compare/v0.3.1...v0.3.2) (2026-11-25)
 
 
