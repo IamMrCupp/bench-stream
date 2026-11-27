@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.1](https://github.com/IamMrCupp/bench-stream/compare/v0.5.0...v0.5.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* **mevo-relay:** restart after 2 s and test the whole gap OBS sees ([ea23de9](https://github.com/IamMrCupp/bench-stream/commit/ea23de99a1d552aec39ec5ec6d6f9f8ffb8de7e8))
+* **mevo-relay:** restart on a flat 5 s delay so a long outage can't slow every reconnect ([d8fa790](https://github.com/IamMrCupp/bench-stream/commit/d8fa790fdc30628bbaf01527cd67c8f0ffbb11e3))
+
 ## [0.5.0](https://github.com/IamMrCupp/bench-stream/compare/v0.4.1...v0.5.0) (2026-11-27)
 
 
