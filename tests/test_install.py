@@ -16,7 +16,7 @@ class UserInstall(unittest.TestCase):
         self.home = tempfile.mkdtemp()
         self.bin = tempfile.mkdtemp()
         self.calls = os.path.join(self.bin, "calls")
-        for tool in ("systemctl", "kbuildsycoca6"):
+        for tool in ("systemctl", "kbuildsycoca6", "kwriteconfig6", "qdbus6", "udevadm"):
             path = os.path.join(self.bin, tool)
             with open(path, "w") as f:
                 f.write(f'#!/bin/sh\necho "{tool} $*" >> "{self.calls}"\n')
@@ -46,11 +46,10 @@ class UserInstall(unittest.TestCase):
     def test_install_never_starts_or_restarts_anything(self):
         self.run_install()
         with open(self.calls) as f:
-            calls = f.read().split("\n")
-        self.assertIn("systemctl --user daemon-reload", calls)
-        for line in calls:
-            for verb in ("start", "restart", "enable", "reload-or-restart"):
-                self.assertNotIn(f" {verb} ", f" {line} ", line)
+            calls = [line for line in f.read().split("\n") if line]
+        # The only systemd call is the reload; the KDE app list rebuild is the only other tool.
+        self.assertEqual([c for c in calls if c.startswith("systemctl")], ["systemctl --user daemon-reload"])
+        self.assertEqual([c for c in calls if not c.startswith(("systemctl", "kbuildsycoca6"))], [])
 
 
 class PortalDropin(unittest.TestCase):

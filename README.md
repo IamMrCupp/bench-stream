@@ -36,7 +36,7 @@ git clone https://github.com/IamMrCupp/bench-stream ~/Code/bench-stream
 cd ~/Code/bench-stream
 
 ./install.sh --diff          # what would change — run this first on a bench that already has them
-./install.sh                 # scripts and user units
+./install.sh                 # scripts, user units, KDE bits and the PipeWire drop-in
 sudo ./install.sh --system   # pixy-* and the udev rules
 systemctl --user enable --now obs-golive obs-micwatch obs-sceneswitch mevo-relay mevo-watch
 ```
@@ -57,9 +57,9 @@ The relay can't bring a hung Mevo back, and OBS's "Mevo SRT" input keeps saying 
 
 ### Window captures after an OBS restart
 
-OBS starts all five window captures at once, and each one asks the portal for its PipeWire connection at the same moment. To open each connection the portal starts a PipeWire context. That context's realtime module asks for thread priority over D-Bus, and by default it asks the Realtime portal — the portal process itself, still busy with the call that started it. A few of those at once block each other until D-Bus gives up at 25 s. By then OBS has timed out on every capture but one or two (`Error retrieving pipewire fd: Timeout was reached` in its log), and they show nothing until someone re-picks the window by hand.
+OBS starts all five window captures at once, and each one asks the portal for its PipeWire connection at the same moment. To open each connection the portal starts a PipeWire context. That context's realtime module asks for thread priority over D-Bus, and before xdg-desktop-portal 1.22.1 it asks the Realtime portal — the portal process itself, still busy with the call that started it. A few of those at once block each other until D-Bus gives up at 25 s. By then OBS has timed out on every capture but one or two (`Error retrieving pipewire fd: Timeout was reached` in its log), and they show nothing until someone re-picks the window by hand.
 
-`50-portal-no-rt.conf` turns that module off for `xdg-desktop-portal` and nothing else. The portal hands each connection to OBS and closes its own end, so it never needs realtime scheduling. PipeWire reads the drop-in every time the portal opens a connection, so it works from the next OBS start with nothing restarted.
+`50-portal-no-rt.conf` turns that module off for `xdg-desktop-portal` and nothing else. The portal hands each connection to OBS and closes its own end, so it never needs realtime scheduling. PipeWire reads the drop-in every time the portal opens a connection, so it works from the next OBS start with nothing restarted. The portal fixed this itself in 1.22.1 ([commit 89f2f5e3d2](https://github.com/flatpak/xdg-desktop-portal/commit/89f2f5e3d2)); the bench's Ubuntu package is 1.21.1. Once `dpkg -l xdg-desktop-portal` shows 1.22.1 or newer, the drop-in does nothing and can go.
 
 To check it: restart OBS, then `grep -c "Timeout was reached"` OBS's newest log in `~/.config/obs-studio/logs`. It should be 0, with a `"streaming"` line for each capture.
 
