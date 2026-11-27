@@ -11,10 +11,11 @@ Environment="MEVO_RELAY_DST=udp://127.0.0.1:4202?pkt_size=1316"
 # always, not on-failure: a feed that stalls mid-stream makes ffmpeg exit 0.
 Restart=always
 # A flat delay, no RestartSteps: systemd grows a stepped delay from the restart
-# counter, which only resets on a manual start, so one long outage left every
-# later reconnect waiting the full maximum. Keep it well inside the 15 s OBS
-# waits on its input: delay plus a failed connect (~5 s) is about 10 s.
-RestartSec=5
+# counter, which only resets on a manual start or reset-failed, so one long
+# outage left every later reconnect waiting the full maximum. OBS drops its input
+# after 15 s without a packet. A stall that recovers costs the 5 s SRT timeout,
+# this delay, and about 3 s of start-up: about 10 s, leaving 5 s of margin.
+RestartSec=2
 
 [Install]
 WantedBy=default.target
