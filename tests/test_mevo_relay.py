@@ -127,5 +127,34 @@ class Script(unittest.TestCase):
         self.assertIn("udp://127.0.0.1:4202?pkt_size=1316", text)
 
 
+class Unit(unittest.TestCase):
+    OBS_TIMEOUT = 15  # s, the timeout= on OBS's "Mevo SRT" input (see README)
+    SRT_TIMEOUT = 5  # s, a failed connect or a stalled feed ends inside this
+
+    def setUp(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "systemd", "user", "mevo-relay.service")
+        with open(path) as f:
+            self.keys = {}
+            for line in f:
+                line = line.split("#", 1)[0].strip()
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    self.keys[k] = v
+
+    def test_restarts_on_every_exit(self):
+        # a stalled feed ends with exit code 0
+        self.assertEqual(self.keys.get("Restart"), "always")
+
+    def test_restart_delay_is_flat(self):
+        # systemd steps the delay up from a counter that only resets on a manual
+        # start, so after one long outage every reconnect would wait the maximum.
+        self.assertNotIn("RestartSteps", self.keys)
+        self.assertNotIn("RestartMaxDelaySec", self.keys)
+
+    def test_a_reconnect_fits_inside_obs_timeout(self):
+        delay = float(self.keys.get("RestartSec", "0.1"))
+        self.assertLess(delay + self.SRT_TIMEOUT, self.OBS_TIMEOUT)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
