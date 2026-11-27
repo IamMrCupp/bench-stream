@@ -2,8 +2,9 @@
 """Tests for obs-golive against a fake OBS. Run: python3 tests/test_obs_golive.py [path/to/obs-golive]
 
 The fake speaks just enough obs-websocket v5 (with password auth) and Aitum's
-vendor requests to prove what the helper does on go-live and on stop. It never
-touches the real OBS.
+vendor requests to prove what the helper does on go-live and on stop, plus
+GetSourceScreenshot for the overhead camera check. It never touches the real OBS
+and never puts up a real desktop notification.
 """
 import asyncio, base64, hashlib, importlib.machinery, importlib.util, json, os, sys, tempfile
 
@@ -15,17 +16,19 @@ PASSWORD = "test-password"
 
 
 def load(conf_path):
-    os.environ.update(OBS_GOLIVE_CONF=conf_path, OBS_GOLIVE_DELAY="0.05", OBS_GOLIVE_RETRY="0.05")
+    os.environ.update(OBS_GOLIVE_CONF=conf_path, OBS_GOLIVE_DELAY="0.05", OBS_GOLIVE_RETRY="0.05",
+                      OBS_GOLIVE_MEVO="Mevo SRT", OBS_GOLIVE_MEVO_TRIES="3", OBS_GOLIVE_MEVO_GAP="0.05")
     loader = importlib.machinery.SourceFileLoader("obs_golive", SCRIPT)
     spec = importlib.util.spec_from_loader("obs_golive", loader)
     mod = importlib.util.module_from_spec(spec)
     loader.exec_module(mod)
     mod.log = lambda *a: None
+    mod.notify = lambda *a: None
     return mod
 
 
 class FakeObs:
-    def __init__(self, aitum=("YouTube Output", "Kick Output"), running=(), main_live=False):
+    def __init__(self, aitum=("YouTube Output", "Kick Output"), running=(), main_live=False, mevo=("ok",)):
         self.aitum = list(aitum)
         self.running = set(running)  # aitum names currently running
         self.main_live = main_live
@@ -33,6 +36,13 @@ class FakeObs:
         self.authed = 0
         self.clients = set()
         self.subscriptions = None
+        # What each screenshot of "Mevo SRT" does, in turn; the last one repeats.
+        # "ok" renders, "dead" fails like a dead feed (702), "missing" has no such input (600),
+        # "other" is some other failure (703).
+        self.mevo = list(mevo)
+        self.shots = []  # sourceName of each GetSourceScreenshot
+        self.stream_requests = []  # any request that would start or stop the main stream
+        self.logs, self.notes = [], []
 
     async def handler(self, ws):
         salt, challenge = "salt", "challenge"
@@ -51,8 +61,21 @@ class FakeObs:
             async for raw in ws:
                 d = json.loads(raw)["d"]
                 kind, data = d["requestType"], d.get("requestData") or {}
-                ok, resp = True, {}
-                if kind == "GetStreamStatus":
+                ok, resp, code = True, {}, 100
+                if kind in ("StartStream", "StopStream", "ToggleStream"):
+                    self.stream_requests.append(kind)
+                if kind == "GetSourceScreenshot":
+                    self.shots.append(data.get("sourceName"))
+                    how = self.mevo[min(len(self.shots), len(self.mevo)) - 1]
+                    if data.get("sourceName") != "Mevo SRT" or how == "missing":
+                        ok, code = False, 600
+                    elif how == "dead":
+                        ok, code = False, 702
+                    elif how == "other":
+                        ok, code = False, 703
+                    else:
+                        resp = {"imageData": "data:image/png;base64,AAAA"}
+                elif kind == "GetStreamStatus":
                     resp = {"outputActive": self.main_live}
                 elif kind == "GetOutputList":
                     outs = [{"outputName": "adv_stream", "outputActive": self.main_live}]
@@ -70,10 +93,10 @@ class FakeObs:
                     else:
                         inner = {"success": False}
                     resp = {"vendorName": "aitum-multistream", "requestType": rt, "responseData": inner}
-                else:
-                    ok = False
+                elif kind not in ("StartStream", "StopStream", "ToggleStream"):
+                    ok, code = False, 204
                 await ws.send(json.dumps({"op": 7, "d": {"requestType": kind, "requestId": d["requestId"],
-                                                           "requestStatus": {"result": ok, "code": 100 if ok else 204},
+                                                           "requestStatus": {"result": ok, "code": code},
                                                            "responseData": resp}}))
         finally:
             self.clients.discard(ws)
@@ -100,6 +123,8 @@ async def run(fake, body, password=PASSWORD):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
             json.dump({"server_port": port, "server_password": password}, f)
         mod = load(f.name)
+        mod.log = lambda *a: fake.logs.append(" ".join(map(str, a)))
+        mod.notify = lambda *a: fake.notes.append(a)
         task = asyncio.create_task(mod.main())
         try:
             await body(fake)
@@ -174,6 +199,102 @@ async def test_it_reconnects_after_obs_restarts():
         await fake.emit_stream(True)
         await until(lambda: len(fake.calls) == 2)
     await run(FakeObs(), body)
+
+
+async def test_go_live_with_a_working_mevo_stays_quiet():
+    async def body(fake):
+        await until(lambda: fake.clients)
+        await fake.emit_stream(True)
+        await until(lambda: fake.shots)
+        await asyncio.sleep(0.2)
+        assert fake.shots == ["Mevo SRT"], fake.shots
+        assert fake.notes == [], fake.notes
+        assert not [l for l in fake.logs if "WARNING" in l], fake.logs
+    await run(FakeObs(), body)
+
+
+async def test_go_live_with_a_dead_mevo_warns_loudly_and_leaves_the_stream_alone():
+    async def body(fake):
+        await until(lambda: fake.clients)
+        await fake.emit_stream(True)
+        await until(lambda: fake.notes)
+        await asyncio.sleep(0.2)
+        assert fake.shots == ["Mevo SRT"] * 3, fake.shots  # retried before warning
+        assert len(fake.notes) == 1, fake.notes
+        assert "camera" in fake.notes[0][0].lower(), fake.notes
+        assert "power cycle" in fake.notes[0][1].lower(), fake.notes
+        assert any("WARNING" in l and "702" in l for l in fake.logs), fake.logs
+        assert fake.stream_requests == [], fake.stream_requests
+        assert fake.main_live
+        # the outputs still started: the warning doesn't hold up going live
+        assert [c for c in fake.calls if c[0] == "start_output"] == [
+            ("start_output", "YouTube Output"), ("start_output", "Kick Output")], fake.calls
+    await run(FakeObs(mevo=("dead",)), body)
+
+
+async def test_a_mevo_that_renders_on_a_retry_does_not_warn():
+    async def body(fake):
+        await until(lambda: fake.clients)
+        await fake.emit_stream(True)
+        await until(lambda: len(fake.shots) == 2)
+        await asyncio.sleep(0.2)
+        assert fake.shots == ["Mevo SRT"] * 2, fake.shots
+        assert fake.notes == [], fake.notes
+    await run(FakeObs(mevo=("dead", "ok")), body)
+
+
+async def test_no_mevo_input_skips_the_check_without_warning():
+    async def body(fake):
+        await until(lambda: fake.clients)
+        await fake.emit_stream(True)
+        await until(lambda: fake.shots)
+        await asyncio.sleep(0.2)
+        assert fake.shots == ["Mevo SRT"], fake.shots  # a missing input isn't retried
+        assert fake.notes == [], fake.notes
+        assert any("no input named" in l for l in fake.logs), fake.logs
+    await run(FakeObs(mevo=("missing",)), body)
+
+
+async def test_attaching_to_a_live_obs_does_not_check_the_mevo():
+    async def body(fake):
+        await until(lambda: fake.clients)
+        await asyncio.sleep(0.3)
+        assert fake.shots == [] and fake.notes == [], (fake.shots, fake.notes)
+    await run(FakeObs(main_live=True, mevo=("dead",)), body)
+
+
+async def test_a_stream_stopped_during_the_delay_does_not_check_the_mevo():
+    async def body(fake):
+        await until(lambda: fake.clients)
+        await fake.emit_stream(True)
+        fake.main_live = False
+        await asyncio.sleep(0.4)
+        assert fake.shots == [] and fake.notes == [], (fake.shots, fake.notes)
+    await run(FakeObs(mevo=("dead",)), body)
+
+
+async def test_a_stop_during_the_check_cancels_the_warning_and_still_stops_the_outputs():
+    async def body(fake):
+        await until(lambda: fake.clients)
+        await fake.emit_stream(True)
+        await until(lambda: fake.shots)
+        await fake.emit_stream(False)
+        await until(lambda: ("stop_output", "YouTube Output") in fake.calls)
+        await asyncio.sleep(0.3)
+        assert fake.notes == [], fake.notes
+        assert not [l for l in fake.logs if "WARNING" in l], fake.logs
+        assert len(fake.shots) < 3, fake.shots  # gave up checking once the stop arrived
+    await run(FakeObs(mevo=("dead",)), body)
+
+
+async def test_another_error_says_it_could_not_check_instead_of_camera_down():
+    async def body(fake):
+        await until(lambda: fake.clients)
+        await fake.emit_stream(True)
+        await until(lambda: any("couldn't check" in l for l in fake.logs))
+        assert fake.notes == [], fake.notes
+        assert any("703" in l for l in fake.logs), fake.logs
+    await run(FakeObs(mevo=("other",)), body)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""mevo-watch: put a desktop notification up when the Mevo stops sending video.
+
+When the Mevo's SRT feed dies, mevo-relay exits and systemd restarts it, again and
+again, until the camera is power cycled. Nothing else notices: OBS's "Mevo SRT"
+input keeps reporting that it's playing. This watches the relay's unit and says
+so on the desktop.
+
+It reads `systemctl --user show mevo-relay` every MEVO_WATCH_INTERVAL seconds
+(default 5). A relay that has run for MEVO_WATCH_STABLE seconds (default 15) has
+video: a failed connection ends within the 5 s SRT timeout, and so does a stalled
+feed. When the relay hasn't had a run that long for MEVO_WATCH_DOWN_AFTER seconds
+(default 60), it puts up one critical notification for that outage, saying the
+camera needs a power cycle. When a run lasts long enough again, it logs that the
+feed is back and swaps the warning for a normal "camera is back" notification.
+
+A relay unit you stopped yourself is left alone: that's not the camera's fault.
+
+Settings (environment):
+  MEVO_WATCH_UNIT        the relay's user unit       (default mevo-relay)
+  MEVO_WATCH_INTERVAL    seconds between checks      (default 5)
+  MEVO_WATCH_STABLE      seconds a run needs to count as video (default 15)
+  MEVO_WATCH_DOWN_AFTER  seconds without video before the warning (default 60)
+"""
+import os, subprocess, time
+
+UNIT = os.environ.get("MEVO_WATCH_UNIT", "mevo-relay")
+INTERVAL = float(os.environ.get("MEVO_WATCH_INTERVAL", "5"))
+STABLE = float(os.environ.get("MEVO_WATCH_STABLE", "15"))
+DOWN_AFTER = float(os.environ.get("MEVO_WATCH_DOWN_AFTER", "60"))
+APP = "Bench stream"
+ICON = "camera-web"
+PROPS = ("ActiveState", "SubState", "ExecMainPID", "ExecMainStartTimestampMonotonic")
+
+
+def log(msg):
+    print("mevo-watch:", msg, flush=True)
+
+
+def now_us():
+    """CLOCK_MONOTONIC in µs, the clock systemd's *TimestampMonotonic values use."""
+    return time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000
+
+
+def relay_state():
+    """The relay unit's properties as a dict, or None if systemctl didn't answer."""
+    args = ["systemctl", "--user", "show", UNIT]
+    for p in PROPS:
+        args += ["-p", p]
+    try:
+        out = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return dict(line.split("=", 1) for line in out.stdout.splitlines() if "=" in line)
+
+
+def classify(state, now, stable=STABLE):
+    """"up" (the relay has video), "down" (it's trying and failing) or "off" (not running).
+
+    now is CLOCK_MONOTONIC in µs, like the unit's ExecMainStartTimestampMonotonic.
+    """
+    active, sub = state.get("ActiveState"), state.get("SubState")
+    if active in ("activating", "deactivating", "reloading") or sub == "auto-restart":
+        return "down"  # between runs: the restart back-off
+    if active != "active":
+        return "off"  # inactive or failed: someone stopped it, or systemd gave up
+    try:
+        pid = int(state.get("ExecMainPID") or 0)
+        started = int(state.get("ExecMainStartTimestampMonotonic") or 0)
+    except ValueError:
+        return "down"
+    if pid and started and now - started >= stable * 1e6:
+        return "up"
+    return "down"  # running, but not long enough to have shown it has video
+
+
+def minutes(seconds):
+    m = round(seconds / 60)
+    return f"{m} min" if m >= 1 else f"{seconds:.0f} s"
+
+
+class Watch:
+    """Turns a run of up / down / off readings into one warning per outage."""
+
+    def __init__(self, down_after=DOWN_AFTER):
+        self.down_after = down_after
+        self.down_since = None
+        self.warned = False
+        self.off = False
+
+    def tick(self, status, now):
+        """now: seconds, any monotonic clock. Returns ("warn" | "back" | "off", seconds) or None."""
+        if status == "off":
+            self.down_since, self.warned = None, False
+            if not self.off:
+                self.off = True
+                return ("off", 0)
+            return None
+        self.off = False
+        if status == "up":
+            was = self.warned
+            gone = now - self.down_since if self.down_since is not None else 0
+            self.down_since, self.warned = None, False
+            return ("back", gone) if was else None
+        if self.down_since is None:
+            self.down_since = now
+        gone = now - self.down_since
+        if not self.warned and gone >= self.down_after:
+            self.warned = True
+            return ("warn", gone)
+        return None
+
+
+def notify(summary, body, urgency, replace=None):
+    """Show a desktop notification. Returns (shown, id); id lets a later one replace it."""
+    args = ["notify-send", "-a", APP, "-i", ICON, "-u", urgency, "-p"]
+    if replace:
+        args += ["-r", str(replace)]
+    try:
+        out = subprocess.run(args + [summary, body], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as e:
+        log(f"couldn't show the notification ({type(e).__name__})")
+        return False, None
+    if out.returncode != 0:
+        log(f"notify-send failed: {out.stderr.strip()}")
+        return False, None
+    return True, out.stdout.strip() or None
+
+
+def main():
+    watch = Watch()
+    shown = None  # id of the warning on screen, to swap it out later
+    owed = None  # the warning's text while it hasn't reached the screen yet
+    quiet = False  # say "can't read the unit" once
+    log(f"watching {UNIT}; warning after {DOWN_AFTER:g}s without video")
+    while True:
+        state = relay_state()
+        if state is None:
+            if not quiet:
+                log(f"can't read {UNIT} from systemctl; retrying every {INTERVAL:g}s")
+            quiet = True
+        else:
+            quiet = False
+            event = watch.tick(classify(state, now_us()), time.monotonic())
+            kind = event[0] if event else None
+            if kind == "warn":
+                log(f"no video from the Mevo for {event[1]:.0f}s; it needs a power cycle")
+                owed = (f"The Mevo hasn't sent video for {minutes(event[1])}. The relay keeps retrying, "
+                        "but only a power cycle on the camera brings it back.")
+            elif kind == "back":
+                log(f"the Mevo's feed is back after {event[1]:.0f}s")
+                if shown or not owed:
+                    notify("Overhead camera is back", "The Mevo is sending video again.", "normal", replace=shown)
+                shown = owed = None
+            elif kind == "off":
+                log(f"{UNIT} isn't running; nothing to watch until it starts")
+                if shown:  # don't leave a warning up that nothing will clear
+                    notify("Overhead camera: not watching",
+                           f"{UNIT} was stopped, so the camera warning can't clear itself.", "normal", replace=shown)
+                shown = owed = None
+            if owed:
+                # At login, or with no desktop yet, notify-send can fail: keep trying while it's down.
+                ok, nid = notify("Overhead camera is down", owed, "critical")
+                if ok:
+                    shown, owed = nid or shown, None
+        time.sleep(INTERVAL)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass

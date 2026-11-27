@@ -9,10 +9,11 @@ None of it is big enough for a repo of its own, and all of it used to live only 
 | Piece | What it does | Runs as |
 |---|---|---|
 | [`obsctl`](bin/obsctl) | Send one obs-websocket request to the OBS on this machine, or save a screenshot of a source. `obsctl GetStats`, `obsctl shot` | Command |
-| [`obs-golive`](bin/obs-golive) | When the main stream starts, wait a few seconds and start every Aitum Multistream output; when it stops, stop them. Never starts the main stream itself | `obs-golive.service` |
+| [`obs-golive`](bin/obs-golive) | When the main stream starts, wait a few seconds and start every Aitum Multistream output; when it stops, stop them. Then checks the overhead camera's input renders a frame, and warns on the desktop if it doesn't. Never starts or stops the main stream itself | `obs-golive.service` |
 | [`obs-micwatch`](bin/obs-micwatch) | When the DJI Mic receiver drops off USB and comes back, PipeWire gives it a new source and OBS stays attached to nothing. This notices and re-applies the input's device. If the receiver comes back with no audio interface at all, it logs that it needs a replug. While linked, it logs when the mic has sent nothing but digital silence for 15 s — the transmitter's wireless link is down | `obs-micwatch.service` |
 | [`obs-sceneswitch`](bin/obs-sceneswitch) | Watches the overhead camera and switches to the scope scene when the scope arm swings over the work, back when it's parked. Also follows window focus: PulseView, OpenBoardView and Burnwright each get their scene, the HUD goes back to the cameras. The arm needs calibrating first — `obs-sceneswitch calibrate in` / `parked` | `obs-sceneswitch.service` |
 | [`mevo-relay`](bin/mevo-relay) | Passes the Mevo's SRT feed on to OBS with the audio taken out. The Mevo always sends an audio track, even with every mic off in its app, and its drift pushes OBS's audio buffering to the 960 ms maximum. The video is copied, not re-encoded, to `udp://127.0.0.1:4202` | `mevo-relay.service` |
+| [`mevo-watch`](bin/mevo-watch) | Puts a desktop notification up when the relay has had no video for a minute: the Mevo is down and needs a power cycle. One per outage, and it says when the feed is back. OBS's "Mevo SRT" input keeps saying it's playing through all of that, so nothing else tells you | `mevo-watch.service` |
 | [`kde/kwin`](kde/kwin) | A KWin script that tells `obs-sceneswitch` which app just got focus. OBS runs under XWayland and can't see native Wayland windows; KWin can | KWin script |
 | [`kde/applications`](kde/applications) | Meta+1 to Meta+7 pick a scene by hand: Overhead, Scope, Chip Programmer, Board View, Logic Analyzer, Terminal, Browser | KDE global shortcuts |
 | [`pixy-tune`](bin/pixy-tune) | Manual exposure and white balance for the EMEET PIXY, which forgets both on replug | udev, on plug-in |
@@ -29,14 +30,14 @@ The settings each one takes (input names, scene names, delays) are at the top of
 On the bench (Ubuntu, OBS with obs-websocket on):
 
 ```sh
-sudo apt install python3-websockets python3-pil python3-dbus python3-gi pulseaudio-utils v4l-utils
+sudo apt install python3-websockets python3-pil python3-dbus python3-gi pulseaudio-utils v4l-utils libnotify-bin
 git clone https://github.com/IamMrCupp/bench-stream ~/Code/bench-stream
 cd ~/Code/bench-stream
 
 ./install.sh --diff          # what would change — run this first on a bench that already has them
 ./install.sh                 # scripts and user units
 sudo ./install.sh --system   # pixy-* and the udev rules
-systemctl --user enable --now obs-golive obs-micwatch obs-sceneswitch mevo-relay
+systemctl --user enable --now obs-golive obs-micwatch obs-sceneswitch mevo-relay mevo-watch
 ```
 
 `install.sh` copies and reloads — it never starts or restarts a service, so a change goes live when you restart it, not when you pull. The multichat unit also needs the fork checked out at `~/.local/share/multichat` and Node.
@@ -50,6 +51,8 @@ obsctl SetInputSettings '{"inputName":"Mevo SRT","inputSettings":{"input":"udp:/
 ```
 
 Then restart OBS once. OBS never lowers its audio buffering while it runs, so the second it already built up only goes away on a restart. The Mevo's address is in `mevo-relay.service`. The 15 s timeout is longer than the gap while the relay restarts, so OBS keeps its connection through a relay restart. While the Mevo is off, the unit backs off to one try every 30 s.
+
+The relay can't bring a hung Mevo back, and OBS's "Mevo SRT" input keeps saying it's playing while it's getting nothing. `mevo-watch` reads the relay's unit every 5 s. A relay run that lasts 15 s has video, since a failed connection or a stalled feed ends inside the 5 s SRT timeout. A minute without one puts up a critical notification saying the camera needs a power cycle. When the feed comes back it logs that and swaps the warning for a "camera is back" one. It needs `notify-send` (`libnotify-bin`).
 
 ### Scene switching off focus, and the scene shortcuts
 
@@ -100,10 +103,11 @@ pip install websockets pillow
 python3 tests/test_obs_golive.py
 python3 tests/test_obs_micwatch.py
 python3 tests/test_obs_sceneswitch.py
+python3 tests/test_mevo_watch.py
 python3 tests/test_mevo_relay.py   # needs ffmpeg; the SRT test runs where ffmpeg has SRT, as on the bench
 ```
 
-CI runs all four on every pull request.
+CI runs all five on every pull request.
 
 ## Credit
 

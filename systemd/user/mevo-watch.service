@@ -1,0 +1,13 @@
+[Unit]
+Description=Show a desktop notification when the Mevo stops sending video
+Documentation=file:%h/.local/bin/mevo-watch
+
+[Service]
+ExecStart=%h/.local/bin/mevo-watch
+Environment=MEVO_WATCH_DOWN_AFTER=60
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -7,16 +7,26 @@ and does two things:
   main stream started  -> wait a few seconds, then start each Aitum output
   main stream stopped  -> stop each Aitum output that is still running
 
+Once the outputs are started, it checks that the overhead camera's input
+(OBS_GOLIVE_MEVO, default "Mevo SRT") renders a frame. A dead Mevo feed leaves
+that input reporting it's playing, but a screenshot of it fails (code 702). If
+every try fails that way, it logs a loud warning and puts up a critical desktop
+notification. Any other error is logged as "couldn't check", and a stop that
+arrives during the check cancels the warning. It never stops the stream over it: you're live, it just tells you.
+
 It never starts the main stream, and it does nothing when it attaches to an OBS
 that is already live: it only reacts to you pressing Start or Stop Streaming.
 
 Settings (environment):
   OBS_GOLIVE_DELAY   seconds to wait after the main stream starts (default 5)
   OBS_GOLIVE_CONF    obs-websocket config file (default: OBS's own)
+  OBS_GOLIVE_MEVO    input to check renders a frame on go-live (default "Mevo SRT"; "" skips it)
+  OBS_GOLIVE_MEVO_TRIES  screenshots to try before warning (default 3)
+  OBS_GOLIVE_MEVO_GAP    seconds between them (default 2)
 
 Reads the port and password from OBS's own config; never prints the password.
 """
-import asyncio, base64, hashlib, json, os, sys
+import asyncio, base64, hashlib, json, os, subprocess, sys
 
 import websockets
 
@@ -26,6 +36,11 @@ CONF = os.environ.get(
 )
 DELAY = float(os.environ.get("OBS_GOLIVE_DELAY", "5"))
 RETRY = float(os.environ.get("OBS_GOLIVE_RETRY", "5"))
+MEVO = os.environ.get("OBS_GOLIVE_MEVO", "Mevo SRT")
+MEVO_TRIES = max(1, int(os.environ.get("OBS_GOLIVE_MEVO_TRIES", "3")))
+MEVO_GAP = float(os.environ.get("OBS_GOLIVE_MEVO_GAP", "2"))
+NOT_FOUND = 600  # obs-websocket RequestStatus::ResourceNotFound
+RENDER_FAILED = 702  # RequestStatus::RequestProcessingFailed: what a dead feed gets
 VENDOR = "aitum-multistream"
 PREFIX = "aitum_multi_output_"  # how Aitum names its outputs inside OBS
 OUTPUTS_EVENTS = 1 << 6  # obs-websocket EventSubscription::Outputs
@@ -45,6 +60,7 @@ class Obs:
         self.ws = ws
         self.events = []
         self.n = 0
+        self.status = {}  # requestStatus of the last answer: result, code, comment
 
     async def identify(self, password):
         hello = json.loads(await self.ws.recv())["d"]
@@ -71,6 +87,7 @@ class Obs:
                 self.events.append(msg["d"])
             elif msg["op"] == 7 and msg["d"]["requestId"] == rid:
                 d = msg["d"]
+                self.status = d["requestStatus"]
                 return d["requestStatus"]["result"], d.get("responseData") or {}
 
     async def next_event(self):
@@ -104,12 +121,72 @@ class Obs:
         return bool(ok and resp.get("outputActive"))
 
 
+def notify(summary, body):
+    """A critical desktop notification. Best effort: the log line is the record."""
+    try:
+        subprocess.run(["notify-send", "-a", "Bench stream", "-i", "camera-web", "-u", "critical", summary, body],
+                       capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as e:
+        log(f"couldn't show the notification ({type(e).__name__})")
+
+
+def stop_queued(obs):
+    """True if a main-stream stop has arrived while we were busy."""
+    return any(ev.get("eventType") == "StreamStateChanged"
+               and ev.get("eventData", {}).get("outputState") == STOPPED for ev in obs.events)
+
+
+async def mevo_renders(obs):
+    """(result, status) of the last screenshot. result is "ok", "dead" (702 every try),
+    "missing" (no such input), "stopped" or "unknown" (another error)."""
+    for n in range(MEVO_TRIES):
+        ok, _ = await obs.request(
+            "GetSourceScreenshot", {"sourceName": MEVO, "imageFormat": "png", "imageWidth": 64}
+        )
+        status = obs.status
+        if ok:
+            return "ok", status
+        if status.get("code") == NOT_FOUND:
+            return "missing", status
+        if stop_queued(obs):
+            return "stopped", status
+        if n + 1 < MEVO_TRIES:
+            await asyncio.sleep(MEVO_GAP)
+    if not await obs.main_stream_active() or stop_queued(obs):
+        return "stopped", status
+    return ("dead" if status.get("code") == RENDER_FAILED else "unknown"), status
+
+
+async def check_mevo(obs):
+    if not MEVO:
+        return
+    result, status = await mevo_renders(obs)
+    code = status.get("code")
+    if result == "missing":
+        log(f"OBS has no input named '{MEVO}'; skipping the camera check")
+    elif result == "ok":
+        log(f"'{MEVO}' is rendering")
+    elif result == "stopped":
+        log("main stream stopped during the camera check; not warning")
+    elif result == "unknown":
+        log(f"couldn't check '{MEVO}': OBS answered code {code} ({status.get('comment', '')})")
+    else:
+        log("!" * 72)
+        log(f"WARNING: you're live and '{MEVO}' renders no frame (code {code}).")
+        log("The overhead camera is down. Power cycle the Mevo; the relay and OBS pick it back up.")
+        log("!" * 72)
+        await asyncio.to_thread(
+            notify, "Live with the overhead camera down",
+            f"'{MEVO}' renders no frame. Power cycle the Mevo; the stream keeps going.")
+
+
 async def start_all(obs):
+    """Start the Aitum outputs. Returns False if the main stream stopped during the delay."""
     if DELAY:
         await asyncio.sleep(DELAY)
     if not await obs.main_stream_active():
         log("main stream stopped again before the delay ran out; starting nothing")
-        return
+        return False
     running = await obs.active_outputs()
     for name in await obs.aitum_outputs():
         if PREFIX + name in running:
@@ -117,6 +194,7 @@ async def start_all(obs):
             continue
         ok, resp = await obs.vendor("start_output", {"output": name, "name": name})
         log(f"start '{name}':", "ok" if ok and resp.get("success", True) else f"FAILED {resp}")
+    return True
 
 
 async def stop_all(obs):
@@ -142,7 +220,8 @@ async def session(url, password):
             state = ev.get("eventData", {}).get("outputState")
             if state == STARTED:
                 log("main stream started")
-                await start_all(obs)
+                if await start_all(obs):
+                    await check_mevo(obs)
             elif state == STOPPED:
                 log("main stream stopped")
                 await stop_all(obs)
