@@ -25,6 +25,7 @@ jobs:
       - run: python3 tests/test_obs_micwatch.py
       - run: python3 tests/test_obs_sceneswitch.py
       - run: python3 tests/test_mevo_watch.py
+      - run: python3 tests/test_install.py
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: python3 tests/test_mevo_relay.py
 

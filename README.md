@@ -20,6 +20,7 @@ None of it is big enough for a repo of its own, and all of it used to live only 
 | [`pixy-track`](bin/pixy-track) | The PIXY's AI tracking on, off or status, over its vendor HID interface | udev, on plug-in |
 | [`multichat.service`](systemd/user/multichat.service) | Runs the merged Twitch + YouTube chat overlay from [IamMrCupp/megarohas_multichat](https://github.com/IamMrCupp/megarohas_multichat), checked out at `~/.local/share/multichat`. The code lives in that fork, not here | User service |
 | [`udev/`](udev) | Keep the PIXY awake and re-tune it on plug-in | udev |
+| [`pipewire/client.conf.d`](pipewire/client.conf.d) | Keeps PipeWire's realtime module out of xdg-desktop-portal's own connections. Without it, only one or two of OBS's five window captures come back after an OBS restart | PipeWire client config |
 
 Every OBS helper reads the websocket port and password from OBS's own config. Nothing here stores or prints the password.
 
@@ -53,6 +54,14 @@ obsctl SetInputSettings '{"inputName":"Mevo SRT","inputSettings":{"input":"udp:/
 Then restart OBS once. OBS never lowers its audio buffering while it runs, so the second it already built up only goes away on a restart. The Mevo's address is in `mevo-relay.service`. The 15 s timeout is longer than the gap while the relay restarts, so OBS keeps its connection through a relay restart. While the Mevo is off, the unit backs off to one try every 30 s.
 
 The relay can't bring a hung Mevo back, and OBS's "Mevo SRT" input keeps saying it's playing while it's getting nothing. `mevo-watch` reads the relay's unit every 5 s. A relay run that lasts 15 s has video, since a failed connection or a stalled feed ends inside the 5 s SRT timeout. A minute without one puts up a critical notification saying the camera needs a power cycle. When the feed comes back it logs that and swaps the warning for a "camera is back" one. It needs `notify-send` (`libnotify-bin`).
+
+### Window captures after an OBS restart
+
+OBS starts all five window captures at once, and each one asks the portal for its PipeWire connection at the same moment. To open each connection the portal starts a PipeWire context. That context's realtime module asks for thread priority over D-Bus, and by default it asks the Realtime portal — the portal process itself, still busy with the call that started it. A few of those at once block each other until D-Bus gives up at 25 s. By then OBS has timed out on every capture but one or two (`Error retrieving pipewire fd: Timeout was reached` in its log), and they show nothing until someone re-picks the window by hand.
+
+`50-portal-no-rt.conf` turns that module off for `xdg-desktop-portal` and nothing else. The portal hands each connection to OBS and closes its own end, so it never needs realtime scheduling. PipeWire reads the drop-in every time the portal opens a connection, so it works from the next OBS start with nothing restarted.
+
+To check it: restart OBS, then `grep -c "Timeout was reached"` OBS's newest log in `~/.config/obs-studio/logs`. It should be 0, with a `"streaming"` line for each capture.
 
 ### Scene switching off focus, and the scene shortcuts
 
@@ -104,10 +113,11 @@ python3 tests/test_obs_golive.py
 python3 tests/test_obs_micwatch.py
 python3 tests/test_obs_sceneswitch.py
 python3 tests/test_mevo_watch.py
+python3 tests/test_install.py      # Linux: runs install.sh against a throwaway HOME
 python3 tests/test_mevo_relay.py   # needs ffmpeg; the SRT test runs where ffmpeg has SRT, as on the bench
 ```
 
-CI runs all five on every pull request.
+CI runs all six on every pull request.
 
 ## Credit
 
