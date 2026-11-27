@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.2](https://github.com/IamMrCupp/bench-stream/compare/v0.5.1...v0.5.2) (2026-11-27)
+
+
+### Bug Fixes
+
+* **pipewire:** keep module-rt out of the portal so every window capture restores ([39bdd53](https://github.com/IamMrCupp/bench-stream/commit/39bdd5363d731d52ac4d4a49e8419336d6048ef2))
+* **pipewire:** note the portal's own 1.22.1 fix, tighten the install test ([ff7b962](https://github.com/IamMrCupp/bench-stream/commit/ff7b9625818412fb737ec6fedf387d4188bccdbb))
+
 ## [0.5.1](https://github.com/IamMrCupp/bench-stream/compare/v0.5.0...v0.5.1) (2026-11-27)
 
 
