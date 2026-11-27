@@ -2,7 +2,8 @@
 # Put bench-stream's scripts, units and udev rules where the bench runs them.
 #
 #   ./install.sh               user part: scripts -> ~/.local/bin, units -> ~/.config/systemd/user,
-#                              KDE scene shortcuts and the KWin focus script -> ~/.local/share
+#                              KDE scene shortcuts and the KWin focus script -> ~/.local/share,
+#                              PipeWire client drop-ins -> ~/.config/pipewire/client.conf.d
 #   sudo ./install.sh --system system part: pixy-* -> /usr/local/bin, rules -> /etc/udev/rules.d
 #   ./install.sh --diff        show what differs between this checkout and what's installed
 #
@@ -18,6 +19,7 @@ BIN="$HOME/.local/bin"
 UNITS="$HOME/.config/systemd/user"
 APPS="$HOME/.local/share/applications"
 KWIN="$HOME/.local/share/kwin/scripts"
+PWCONF="$HOME/.config/pipewire/client.conf.d"
 SBIN=/usr/local/bin
 RULES=/etc/udev/rules.d
 
@@ -27,6 +29,7 @@ pairs() {  # "source target" per line, for the part asked for
         for s in $USER_SCRIPTS; do echo "$HERE/bin/$s $BIN/$s"; done
         for u in "$HERE"/systemd/user/*.service; do echo "$u $UNITS/$(basename "$u")"; done
         for a in "$HERE"/kde/applications/*.desktop; do echo "$a $APPS/$(basename "$a")"; done
+        for c in "$HERE"/pipewire/client.conf.d/*.conf; do echo "$c $PWCONF/$(basename "$c")"; done
         (cd "$HERE/kde/kwin" && find . -type f | sort) | while read -r f; do
             echo "$HERE/kde/kwin/${f#./} $KWIN/${f#./}"
         done
@@ -78,7 +81,7 @@ case "${1:-}" in
     fi
     ;;
 *)
-    sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac

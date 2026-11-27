@@ -42,5 +42,6 @@ python3 tests/test_obs_golive.py
 python3 tests/test_obs_micwatch.py
 python3 tests/test_obs_sceneswitch.py
 python3 tests/test_mevo_watch.py
+python3 tests/test_install.py      # Linux
 python3 tests/test_mevo_relay.py   # needs ffmpeg
 ```
