@@ -87,6 +87,14 @@ echo "$*" >> "$FAKE_DIR/systemctl.args"
 cat "$FAKE_DIR/state"
 """
 FAKE_NOTIFY = """#!/bin/sh
+# Fails while $FAKE_DIR/fail-notify holds a number above 0, counting it down,
+# the way notify-send does before the desktop's notification server is up.
+n=$(cat "$FAKE_DIR/fail-notify" 2>/dev/null || echo 0)
+if [ "$n" -gt 0 ]; then
+    echo $((n - 1)) > "$FAKE_DIR/fail-notify"
+    echo "Cannot autolaunch D-Bus without X11 \\$DISPLAY" >&2
+    exit 1
+fi
 printf '%s\\n' "$*" >> "$FAKE_DIR/notes"
 echo 42
 """
@@ -164,6 +172,26 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("feed is back", out)
         with open(os.path.join(self.dir.name, "systemctl.args")) as f:
             self.assertIn("--user show mevo-relay", f.readline())
+
+    def test_a_warning_that_fails_to_show_is_tried_again(self):
+        with open(os.path.join(self.dir.name, "fail-notify"), "w") as f:
+            f.write("3")
+        self.set_state(unit(active="activating", sub="auto-restart", pid=0, started=1))
+        self.start()
+        self.wait_for(lambda: self.notes())
+        time.sleep(0.5)
+        notes = self.notes()
+        self.assertEqual(len(notes), 1, notes)
+        self.assertIn("Overhead camera is down", notes[0])
+
+    def test_stopping_the_relay_clears_the_warning_on_screen(self):
+        self.set_state(unit(active="activating", sub="auto-restart", pid=0, started=1))
+        self.start()
+        self.wait_for(lambda: self.notes())
+        self.set_state(unit(active="inactive", sub="dead", pid=0))
+        self.wait_for(lambda: len(self.notes()) == 2)
+        self.assertIn("-r 42", self.notes()[1])
+        self.assertIn("not watching", self.notes()[1])
 
     def test_a_healthy_relay_stays_quiet(self):
         self.set_state(unit(started=self.now_us() - 3600 * S))

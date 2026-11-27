@@ -114,7 +114,7 @@ class Watch:
 
 
 def notify(summary, body, urgency, replace=None):
-    """Show a desktop notification; returns its id (to replace it later), or None."""
+    """Show a desktop notification. Returns (shown, id); id lets a later one replace it."""
     args = ["notify-send", "-a", APP, "-i", ICON, "-u", urgency, "-p"]
     if replace:
         args += ["-r", str(replace)]
@@ -122,16 +122,17 @@ def notify(summary, body, urgency, replace=None):
         out = subprocess.run(args + [summary, body], capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError) as e:
         log(f"couldn't show the notification ({type(e).__name__})")
-        return None
+        return False, None
     if out.returncode != 0:
         log(f"notify-send failed: {out.stderr.strip()}")
-        return None
-    return out.stdout.strip() or None
+        return False, None
+    return True, out.stdout.strip() or None
 
 
 def main():
     watch = Watch()
-    shown = None  # id of the warning on screen, to swap it out when the feed is back
+    shown = None  # id of the warning on screen, to swap it out later
+    owed = None  # the warning's text while it hasn't reached the screen yet
     quiet = False  # say "can't read the unit" once
     log(f"watching {UNIT}; warning after {DOWN_AFTER:g}s without video")
     while True:
@@ -143,19 +144,27 @@ def main():
         else:
             quiet = False
             event = watch.tick(classify(state, now_us()), time.monotonic())
-            if event and event[0] == "warn":
+            kind = event[0] if event else None
+            if kind == "warn":
                 log(f"no video from the Mevo for {event[1]:.0f}s; it needs a power cycle")
-                shown = notify(
-                    "Overhead camera is down",
-                    f"The Mevo hasn't sent video for {minutes(event[1])}. The relay keeps retrying, "
-                    "but only a power cycle on the camera brings it back.",
-                    "critical")
-            elif event and event[0] == "back":
+                owed = (f"The Mevo hasn't sent video for {minutes(event[1])}. The relay keeps retrying, "
+                        "but only a power cycle on the camera brings it back.")
+            elif kind == "back":
                 log(f"the Mevo's feed is back after {event[1]:.0f}s")
-                notify("Overhead camera is back", "The Mevo is sending video again.", "normal", replace=shown)
-                shown = None
-            elif event and event[0] == "off":
+                if shown or not owed:
+                    notify("Overhead camera is back", "The Mevo is sending video again.", "normal", replace=shown)
+                shown = owed = None
+            elif kind == "off":
                 log(f"{UNIT} isn't running; nothing to watch until it starts")
+                if shown:  # don't leave a warning up that nothing will clear
+                    notify("Overhead camera: not watching",
+                           f"{UNIT} was stopped, so the camera warning can't clear itself.", "normal", replace=shown)
+                shown = owed = None
+            if owed:
+                # At login, or with no desktop yet, notify-send can fail: keep trying while it's down.
+                ok, nid = notify("Overhead camera is down", owed, "critical")
+                if ok:
+                    shown, owed = nid or shown, None
         time.sleep(INTERVAL)
 
 

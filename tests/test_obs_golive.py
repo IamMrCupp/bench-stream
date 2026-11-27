@@ -37,7 +37,8 @@ class FakeObs:
         self.clients = set()
         self.subscriptions = None
         # What each screenshot of "Mevo SRT" does, in turn; the last one repeats.
-        # "ok" renders, "dead" fails like a dead feed (702), "missing" has no such input (600).
+        # "ok" renders, "dead" fails like a dead feed (702), "missing" has no such input (600),
+        # "other" is some other failure (703).
         self.mevo = list(mevo)
         self.shots = []  # sourceName of each GetSourceScreenshot
         self.stream_requests = []  # any request that would start or stop the main stream
@@ -70,6 +71,8 @@ class FakeObs:
                         ok, code = False, 600
                     elif how == "dead":
                         ok, code = False, 702
+                    elif how == "other":
+                        ok, code = False, 703
                     else:
                         resp = {"imageData": "data:image/png;base64,AAAA"}
                 elif kind == "GetStreamStatus":
@@ -268,6 +271,30 @@ async def test_a_stream_stopped_during_the_delay_does_not_check_the_mevo():
         await asyncio.sleep(0.4)
         assert fake.shots == [] and fake.notes == [], (fake.shots, fake.notes)
     await run(FakeObs(mevo=("dead",)), body)
+
+
+async def test_a_stop_during_the_check_cancels_the_warning_and_still_stops_the_outputs():
+    async def body(fake):
+        await until(lambda: fake.clients)
+        await fake.emit_stream(True)
+        await until(lambda: fake.shots)
+        await fake.emit_stream(False)
+        await until(lambda: ("stop_output", "YouTube Output") in fake.calls)
+        await asyncio.sleep(0.3)
+        assert fake.notes == [], fake.notes
+        assert not [l for l in fake.logs if "WARNING" in l], fake.logs
+        assert len(fake.shots) < 3, fake.shots  # gave up checking once the stop arrived
+    await run(FakeObs(mevo=("dead",)), body)
+
+
+async def test_another_error_says_it_could_not_check_instead_of_camera_down():
+    async def body(fake):
+        await until(lambda: fake.clients)
+        await fake.emit_stream(True)
+        await until(lambda: any("couldn't check" in l for l in fake.logs))
+        assert fake.notes == [], fake.notes
+        assert any("703" in l for l in fake.logs), fake.logs
+    await run(FakeObs(mevo=("other",)), body)
 
 
 if __name__ == "__main__":

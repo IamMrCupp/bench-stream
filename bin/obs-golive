@@ -10,8 +10,9 @@ and does two things:
 Once the outputs are started, it checks that the overhead camera's input
 (OBS_GOLIVE_MEVO, default "Mevo SRT") renders a frame. A dead Mevo feed leaves
 that input reporting it's playing, but a screenshot of it fails (code 702). If
-it fails every try, it logs a loud warning and puts up a critical desktop
-notification. It never stops the stream over it: you're live, it just tells you.
+every try fails that way, it logs a loud warning and puts up a critical desktop
+notification. Any other error is logged as "couldn't check", and a stop that
+arrives during the check cancels the warning. It never stops the stream over it: you're live, it just tells you.
 
 It never starts the main stream, and it does nothing when it attaches to an OBS
 that is already live: it only reacts to you pressing Start or Stop Streaming.
@@ -39,6 +40,7 @@ MEVO = os.environ.get("OBS_GOLIVE_MEVO", "Mevo SRT")
 MEVO_TRIES = max(1, int(os.environ.get("OBS_GOLIVE_MEVO_TRIES", "3")))
 MEVO_GAP = float(os.environ.get("OBS_GOLIVE_MEVO_GAP", "2"))
 NOT_FOUND = 600  # obs-websocket RequestStatus::ResourceNotFound
+RENDER_FAILED = 702  # RequestStatus::RequestProcessingFailed: what a dead feed gets
 VENDOR = "aitum-multistream"
 PREFIX = "aitum_multi_output_"  # how Aitum names its outputs inside OBS
 OUTPUTS_EVENTS = 1 << 6  # obs-websocket EventSubscription::Outputs
@@ -128,37 +130,54 @@ def notify(summary, body):
         log(f"couldn't show the notification ({type(e).__name__})")
 
 
+def stop_queued(obs):
+    """True if a main-stream stop has arrived while we were busy."""
+    return any(ev.get("eventType") == "StreamStateChanged"
+               and ev.get("eventData", {}).get("outputState") == STOPPED for ev in obs.events)
+
+
 async def mevo_renders(obs):
-    """True if MEVO renders a frame, False if it never does, None if OBS has no such input."""
+    """(result, status) of the last screenshot. result is "ok", "dead" (702 every try),
+    "missing" (no such input), "stopped" or "unknown" (another error)."""
     for n in range(MEVO_TRIES):
         ok, _ = await obs.request(
             "GetSourceScreenshot", {"sourceName": MEVO, "imageFormat": "png", "imageWidth": 64}
         )
+        status = obs.status
         if ok:
-            return True
-        if obs.status.get("code") == NOT_FOUND:
-            return None
+            return "ok", status
+        if status.get("code") == NOT_FOUND:
+            return "missing", status
+        if stop_queued(obs):
+            return "stopped", status
         if n + 1 < MEVO_TRIES:
             await asyncio.sleep(MEVO_GAP)
-    return False
+    if not await obs.main_stream_active() or stop_queued(obs):
+        return "stopped", status
+    return ("dead" if status.get("code") == RENDER_FAILED else "unknown"), status
 
 
 async def check_mevo(obs):
     if not MEVO:
         return
-    renders = await mevo_renders(obs)
-    if renders is None:
+    result, status = await mevo_renders(obs)
+    code = status.get("code")
+    if result == "missing":
         log(f"OBS has no input named '{MEVO}'; skipping the camera check")
-    elif renders:
+    elif result == "ok":
         log(f"'{MEVO}' is rendering")
+    elif result == "stopped":
+        log("main stream stopped during the camera check; not warning")
+    elif result == "unknown":
+        log(f"couldn't check '{MEVO}': OBS answered code {code} ({status.get('comment', '')})")
     else:
-        code = obs.status.get("code")
         log("!" * 72)
         log(f"WARNING: you're live and '{MEVO}' renders no frame (code {code}).")
         log("The overhead camera is down. Power cycle the Mevo; the relay and OBS pick it back up.")
         log("!" * 72)
-        notify("Live with the overhead camera down",
-               f"'{MEVO}' renders no frame. Power cycle the Mevo; the stream keeps going.")
+        await asyncio.to_thread(
+            notify, "Live with the overhead camera down",
+            f"'{MEVO}' renders no frame. Power cycle the Mevo; the stream keeps going.")
 
 
 async def start_all(obs):
