@@ -24,6 +24,7 @@ jobs:
       - run: python3 tests/test_obs_golive.py
       - run: python3 tests/test_obs_micwatch.py
       - run: python3 tests/test_obs_sceneswitch.py
+      - run: python3 tests/test_mevo_watch.py
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: python3 tests/test_mevo_relay.py
 
@@ -34,4 +35,4 @@ jobs:
       - name: shellcheck
         run: shellcheck -S warning install.sh bin/pixy-tune bin/mevo-relay
       - name: Python scripts compile
-        run: for f in bin/obsctl bin/obs-golive bin/obs-micwatch bin/obs-sceneswitch bin/pixy-track; do python3 -m py_compile "$f"; done
+        run: for f in bin/obsctl bin/obs-golive bin/obs-micwatch bin/obs-sceneswitch bin/mevo-watch bin/pixy-track; do python3 -m py_compile "$f"; done
