@@ -4,7 +4,7 @@ Needs ffmpeg and ffprobe. Feeds a made-up stream with video and audio through th
 relay over local UDP (and over SRT where this ffmpeg has it, as on the bench) and
 checks what comes out. No camera, no network beyond 127.0.0.1.
 """
-import json, os, shutil, socket, subprocess, sys, time, unittest
+import json, os, re, shutil, socket, subprocess, sys, time, unittest
 
 PATH = sys.argv.pop(1) if len(sys.argv) > 1 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin", "mevo-relay")
 PATH = os.path.abspath(PATH)
@@ -125,6 +125,48 @@ class Script(unittest.TestCase):
             text = f.read()
         self.assertIn("srt://192.168.7.33:4201?timeout=5000000", text)
         self.assertIn("udp://127.0.0.1:4202?pkt_size=1316", text)
+
+
+class Unit(unittest.TestCase):
+    OBS_TIMEOUT = 15  # s, the timeout= on OBS's "Mevo SRT" input (see README)
+    STARTUP = 3  # s, a restarted relay to its first packet out, measured on the bench
+
+    def setUp(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "systemd", "user", "mevo-relay.service")
+        self.keys, self.env = {}, []
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line[0] in "#;[" or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                self.keys[k.strip()] = v.strip()
+                if k.strip() == "Environment":
+                    self.env.append(v.strip().strip('"'))
+
+    def srt_timeout(self):
+        src = [e for e in self.env if e.startswith("MEVO_RELAY_SRC=")]
+        self.assertEqual(len(src), 1, self.env)
+        m = re.search(r"[?&]timeout=(\d+)", src[0])
+        self.assertTrue(m, "MEVO_RELAY_SRC has no timeout=")
+        return int(m.group(1)) / 1e6
+
+    def test_restarts_on_every_exit(self):
+        # a stalled feed ends with exit code 0
+        self.assertEqual(self.keys.get("Restart"), "always")
+
+    def test_restart_delay_is_flat(self):
+        # systemd steps the delay up from a counter that only resets on a manual
+        # start or reset-failed, so after one long outage every reconnect would
+        # wait the maximum.
+        self.assertNotIn("RestartSteps", self.keys)
+        self.assertNotIn("RestartMaxDelaySec", self.keys)
+
+    def test_a_recovered_stall_fits_inside_obs_timeout(self):
+        # last packet -> SRT read timeout -> restart delay -> start-up -> first packet
+        delay = float(self.keys.get("RestartSec", "0.1"))
+        gap = self.srt_timeout() + delay + self.STARTUP
+        self.assertLessEqual(gap, self.OBS_TIMEOUT - 3, f"a recovered stall leaves OBS a {gap:g}s gap")
 
 
 if __name__ == "__main__":
