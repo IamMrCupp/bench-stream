@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/IamMrCupp/bench-stream/compare/v0.4.1...v0.5.0) (2026-11-27)
+
+
+### Features
+
+* **mevo-relay:** warn when the Mevo stops sending video ([551872e](https://github.com/IamMrCupp/bench-stream/commit/551872e37478b7aabbf21366b51917bf1fba8695))
+
+
+### Bug Fixes
+
+* **mevo-relay:** retry a warning that didn't show, skip it when the stream stops mid-check ([37cd7b4](https://github.com/IamMrCupp/bench-stream/commit/37cd7b445d861aba0af826bca9b1c9c024a289d5))
+
 ## [0.4.1](https://github.com/IamMrCupp/bench-stream/compare/v0.4.0...v0.4.1) (2026-11-26)
 
 
