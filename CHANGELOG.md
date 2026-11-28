@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.3](https://github.com/IamMrCupp/bench-stream/compare/v0.5.2...v0.5.3) (2026-11-28)
+
+
+### Bug Fixes
+
+* **mevo-relay:** give SRT 300 ms of latency so late packets aren't dropped as smears ([9e93479](https://github.com/IamMrCupp/bench-stream/commit/9e93479225db03e0240dca7a446045f812a91967))
+* **mevo-relay:** give SRT 300 ms of latency so late packets aren't dropped as smears ([299fa92](https://github.com/IamMrCupp/bench-stream/commit/299fa9271a63d53f0c476aefde3a1b55f6789b81))
+
 ## [0.5.2](https://github.com/IamMrCupp/bench-stream/compare/v0.5.1...v0.5.2) (2026-11-27)
 
 
