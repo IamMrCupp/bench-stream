@@ -123,7 +123,7 @@ class Script(unittest.TestCase):
     def test_defaults_point_at_the_bench(self):
         with open(PATH) as f:
             text = f.read()
-        self.assertIn("srt://192.168.7.33:4201?timeout=5000000", text)
+        self.assertIn("srt://192.168.7.33:4201?timeout=5000000&latency=300000", text)
         self.assertIn("udp://127.0.0.1:4202?pkt_size=1316", text)
 
 
@@ -150,6 +150,15 @@ class Unit(unittest.TestCase):
         m = re.search(r"[?&]timeout=(\d+)", src[0])
         self.assertTrue(m, "MEVO_RELAY_SRC has no timeout=")
         return int(m.group(1)) / 1e6
+
+    def test_srt_latency_leaves_room_to_resend(self):
+        # At libsrt's 120 ms default the Mevo's link dropped late packets, and
+        # each one reached OBS as a smeared frame.
+        src = [e for e in self.env if e.startswith("MEVO_RELAY_SRC=")]
+        self.assertEqual(len(src), 1, self.env)
+        m = re.search(r"[?&]latency=(\d+)", src[0])
+        self.assertTrue(m, "MEVO_RELAY_SRC has no latency=")
+        self.assertGreaterEqual(int(m.group(1)) / 1e3, 300)
 
     def test_restarts_on_every_exit(self):
         # a stalled feed ends with exit code 0

@@ -55,6 +55,12 @@ Then restart OBS once. OBS never lowers its audio buffering while it runs, so th
 
 The relay can't bring a hung Mevo back, and OBS's "Mevo SRT" input keeps saying it's playing while it's getting nothing. `mevo-watch` reads the relay's unit every 5 s. A relay run that lasts 15 s has video, since a failed connection or a stalled feed ends inside the 5 s SRT timeout. A minute without one puts up a critical notification saying the camera needs a power cycle. When the feed comes back it logs that and swaps the warning for a "camera is back" one. It needs `notify-send` (`libnotify-bin`).
 
+The relay asks for 300 ms of SRT latency (`latency=300000`, in microseconds). That's how long SRT has to resend a lost packet before it gives up on it. At libsrt's 120 ms default the Mevo's link dropped late packets often enough to see: each one shows in the relay's journal as `RCV-DROPPED` then `Packet corrupt`, and in OBS as a smeared band until the next keyframe, since the video isn't re-encoded. The 300 ms is added delay on the overhead camera only. If those journal lines keep coming, raise it in `mevo-relay.service`:
+
+```sh
+journalctl --user -u mevo-relay --since -1h | grep -c RCV-DROPPED
+```
+
 ### Window captures after an OBS restart
 
 OBS starts all five window captures at once, and each one asks the portal for its PipeWire connection at the same moment. To open each connection the portal starts a PipeWire context. That context's realtime module asks for thread priority over D-Bus, and before xdg-desktop-portal 1.22.1 it asks the Realtime portal — the portal process itself, still busy with the call that started it. A few of those at once block each other until D-Bus gives up at 25 s. By then OBS has timed out on every capture but one or two (`Error retrieving pipewire fd: Timeout was reached` in its log), and they show nothing until someone re-picks the window by hand.

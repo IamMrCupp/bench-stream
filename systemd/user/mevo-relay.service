@@ -6,7 +6,9 @@ StartLimitIntervalSec=0
 
 [Service]
 ExecStart=%h/.local/bin/mevo-relay
-Environment="MEVO_RELAY_SRC=srt://192.168.7.33:4201?timeout=5000000"
+# latency= is in microseconds: 300 ms for SRT to resend before it drops a late
+# packet. At the 120 ms default, dropped packets showed up as smears in OBS.
+Environment="MEVO_RELAY_SRC=srt://192.168.7.33:4201?timeout=5000000&latency=300000"
 Environment="MEVO_RELAY_DST=udp://127.0.0.1:4202?pkt_size=1316"
 # always, not on-failure: a feed that stalls mid-stream makes ffmpeg exit 0.
 Restart=always
