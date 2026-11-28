@@ -11,16 +11,23 @@
 # it, so a Mevo dropout or reboot sorts itself out. A feed that stalls mid-stream
 # ends with exit code 0, so the unit must use Restart=always, not on-failure.
 #
+# latency=300000 (microseconds) gives SRT 300 ms to resend a lost packet before
+# its deadline. At libsrt's default 120 ms, the Mevo's link dropped late packets
+# often enough to show: each one reached OBS as a corrupt frame, a smeared band
+# until the next keyframe, since the video is copied, not re-encoded. The cost is
+# that much more delay on this camera only. Raise it if RCV-DROPPED lines keep
+# turning up in the relay's journal.
+#
 # -analyzeduration keeps start-up short: with -fflags nobuffer, everything read
 # while ffmpeg works out the stream is dropped, and the default is 5 s.
 #
 # Settings (environment):
-#   MEVO_RELAY_SRC       where the Mevo is      (default srt://192.168.7.33:4201?timeout=5000000)
+#   MEVO_RELAY_SRC       where the Mevo is      (default srt://192.168.7.33:4201?timeout=5000000&latency=300000)
 #   MEVO_RELAY_DST       where OBS reads from   (default udp://127.0.0.1:4202?pkt_size=1316)
 #   MEVO_RELAY_LOGLEVEL  ffmpeg's -loglevel     (default warning)
 set -eu
 
-SRC=${MEVO_RELAY_SRC:-srt://192.168.7.33:4201?timeout=5000000}
+SRC=${MEVO_RELAY_SRC:-srt://192.168.7.33:4201?timeout=5000000&latency=300000}
 DST=${MEVO_RELAY_DST:-udp://127.0.0.1:4202?pkt_size=1316}
 
 exec ffmpeg -hide_banner -nostdin -loglevel "${MEVO_RELAY_LOGLEVEL:-warning}" \
